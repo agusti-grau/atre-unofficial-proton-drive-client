@@ -48,7 +48,6 @@ struct BrowseData {
     kr: Option<DriveKeyring>,
     share_id: Option<String>,
     root_link_id: Option<String>,
-    current_folder_id: Option<String>,
     current_parent_key_id: Option<String>,
     path: Vec<(String, String)>,
     files: Vec<FileEntry>,
@@ -79,7 +78,6 @@ enum Message {
     PasswordForDecryptChanged(String),
     DecryptPressed,
     KeyringBuilt(Result<(DriveKeyring, String, String), String>),
-    FolderClicked(String),
     FolderClickedEncrypted(String, String),
     BackPressed,
     FolderLoaded(Result<Vec<DriveNode>, String>),
@@ -118,7 +116,6 @@ impl Application for ProtonDrive {
                             kr: None,
                             share_id: None,
                             root_link_id: None,
-                            current_folder_id: None,
                             current_parent_key_id: None,
                             path: Vec::new(),
                             files: Vec::new(),
@@ -202,7 +199,6 @@ impl Application for ProtonDrive {
                                 kr: None,
                                 share_id: None,
                                 root_link_id: None,
-                                current_folder_id: None,
                                 current_parent_key_id: None,
                                 path: Vec::new(),
                                 files: Vec::new(),
@@ -229,7 +225,6 @@ impl Application for ProtonDrive {
                                 kr: None,
                                 share_id: None,
                                 root_link_id: None,
-                                current_folder_id: None,
                                 current_parent_key_id: None,
                                 path: Vec::new(),
                                 files: Vec::new(),
@@ -284,21 +279,7 @@ impl Application for ProtonDrive {
             }
 
             // ── Browse: navigation ───────────────────────────────────
-            Message::FolderClicked(folder_id) => {
-                if let State::Browse(ref mut d) = self.state {
-                    d.loading = true;
-                    // The parent key for children is this folder's link_id
-                    d.current_parent_key_id = Some(folder_id.clone());
-                    let share_id = d.share_id.clone().unwrap_or_default();
-                    return Command::perform(
-                        fetch_children_async(d.session.clone(), share_id, folder_id),
-                        Message::FolderLoaded,
-                    );
-                }
-                Command::none()
-            }
             Message::FolderClickedEncrypted(folder_id, _name) => {
-                // Same as FolderClicked but we don't need the name here
                 if let State::Browse(ref mut d) = self.state {
                     d.loading = true;
                     d.current_parent_key_id = Some(folder_id.clone());
@@ -659,6 +640,7 @@ fn browse_view(data: &BrowseData) -> Element<'_, Message> {
     container(col).width(Length::Fill).height(Length::Fill).into()
 }
 
+#[allow(non_snake_case)]
 fn Space(w: Length, h: Length) -> iced::widget::Space {
     iced::widget::Space::new(w, h)
 }
