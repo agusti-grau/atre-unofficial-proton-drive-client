@@ -11,3 +11,4 @@ path = "src/main.rs"
 proton-core = { path = "../proton-core" }
 tokio       = { workspace = true }
 anyhow      = { workspace = true }
+serde_json  = { workspace = true }
