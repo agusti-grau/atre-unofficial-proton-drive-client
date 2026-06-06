@@ -13,3 +13,4 @@ tokio       = { workspace = true }
 anyhow      = { workspace = true }
 clap        = { version = "4", features = ["derive"] }
 rpassword   = "7"
+serde_json  = { workspace = true }
