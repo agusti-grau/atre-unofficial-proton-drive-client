@@ -1,0 +1,18 @@
+[Unit]
+Description=Proton Drive sync daemon
+Documentation=https://github.com/ProtonMail/proton-drive-client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/proton-drive/protond
+Restart=on-failure
+RestartSec=5
+
+# Data directory is ~/.local/share/proton-drive
+# Sync directory is ~/Proton Drive
+# Socket at $XDG_RUNTIME_DIR/protond.sock
+
+[Install]
+WantedBy=default.target

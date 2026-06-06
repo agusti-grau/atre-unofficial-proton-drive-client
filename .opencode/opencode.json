@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "bash": {
+      "cargo check:*": "allow",
+      "cargo test:*": "allow",
+      "*": "ask"
+    },
+    "read": {
+      "/usr/local/**": "allow",
+      "/home/agusti/.cargo/registry/**": "allow"
+    },
+    "webfetch": "allow",
+    "websearch": "allow"
+  }
+}

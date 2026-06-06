@@ -1,0 +1,40 @@
+.TH PROTOND 1 "2026-06-06" "0.1.0" "Proton Drive"
+.SH NAME
+protond \- Proton Drive sync daemon
+.SH SYNOPSIS
+.B protond
+.SH DESCRIPTION
+.B protond
+is the background sync daemon for Proton Drive. It runs as a user service,
+watches the local sync directory for changes, periodically synchronizes
+with the remote server, and handles IPC requests from the CLI and GUI.
+.SH USAGE
+protond is typically started automatically by the GUI or via systemd:
+.nf
+  systemctl --user start protond
+.fi
+.SH ENVIRONMENT
+.TP
+.I XDG_RUNTIME_DIR
+Unix socket location for IPC (\fI$XDG_RUNTIME_DIR/protond.sock\fR).
+.TP
+.I PROTON_DRIVE_DIR
+Override the local sync directory (default: \fI~/Proton Drive\fR).
+.TP
+.I RUST_LOG
+Set tracing/logging level (e.g., \fIinfo\fR, \fIdebug\fR, \fIwarn\fR).
+.SH FILES
+.TP
+.I ~/.local/share/proton-drive/
+SQLite database and state.
+.TP
+.I $XDG_RUNTIME_DIR/protond.sock
+Unix domain socket for IPC.
+.SH SIGNALS
+.TP
+.B SIGTERM, SIGINT
+Graceful shutdown.
+.SH BUGS
+Report bugs at https://github.com/anomalyco/opencode/issues
+.SH SEE ALSO
+.BR proton-drive (1)

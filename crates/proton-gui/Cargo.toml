@@ -7,11 +7,21 @@ edition = "2021"
 name = "proton-gui"
 path = "src/main.rs"
 
+[features]
+default = []
+tray    = ["tray-icon", "crossbeam-channel"]
+
 [dependencies]
 proton-core = { path = "../proton-core" }
 iced    = { version = "0.12", features = ["tokio"] }
 tokio   = { workspace = true }
 serde_json = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# System tray icon (optional — requires GTK system libraries)
+tray-icon = { version = "0.24", optional = true }
+crossbeam-channel = { version = "0.5", optional = true }
 
 [profile.release]
 opt-level = 2

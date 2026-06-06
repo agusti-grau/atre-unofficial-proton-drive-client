@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Proton Drive
+Comment=Proton Drive client for Linux
+Exec=/usr/lib/proton-drive/proton-gui
+Icon=proton-drive
+Terminal=false
+Type=Application
+Categories=Utility;FileManager;Network;
+MimeType=x-scheme-handler/proton-drive;

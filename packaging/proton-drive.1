@@ -1,0 +1,47 @@
+.TH PROTON-DRIVE 1 "2026-06-06" "0.1.0" "Proton Drive CLI"
+.SH NAME
+proton-drive \- Proton Drive command-line client
+.SH SYNOPSIS
+.B proton-drive
+[\fICOMMAND\fR] [\fIOPTIONS\fR]
+.SH DESCRIPTION
+Proton Drive is an end-to-end encrypted cloud storage service.
+.B proton-drive
+provides a command-line interface to manage your Proton Drive account
+and synchronize files.
+.SH COMMANDS
+.TP
+.B auth login
+Log in to your Proton account.
+.TP
+.B auth logout
+Log out and revoke the current session.
+.TP
+.B auth status
+Show the current authentication status.
+.TP
+.B ls [OPTIONS] [PATH]
+List files and folders.
+\fB--recursive\fR, \fB-r\fR  List recursively.
+\fB--decrypt\fR, \fB-d\fR   Decrypt file names (prompts for password).
+.TP
+.B status
+Show sync status (requires protond to be running).
+.TP
+.B sync
+Sync the local drive with the remote (requires protond).
+.TP
+.B resolve [OPTIONS] [PATH]
+List or resolve conflicts.
+\fB--strategy\fR \fIstrategy\fR  Resolution strategy: local, remote, rename_local.
+.SH FILES
+.TP
+.I ~/.local/share/proton-drive/
+Local database and configuration.
+.TP
+.I ~/Proton Drive/
+Local synchronized directory.
+.SH BUGS
+Report bugs at https://github.com/anomalyco/opencode/issues
+.SH SEE ALSO
+.BR protond (1)

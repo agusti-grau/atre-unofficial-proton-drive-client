@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --workspace --exclude proton-gui
+	DEB_HOST_MULTIARCH=$(shell dpkg-architecture -qDEB_HOST_MULTIARCH) \
+	cargo build --release -p proton-gui
+
+override_dh_auto_install:
+	install -Dm755 target/release/protond          debian/proton-drive/usr/lib/proton-drive/protond
+	install -Dm755 target/release/proton-drive     debian/proton-drive/usr/lib/proton-drive/proton-drive
+	install -Dm755 target/release/proton-gui       debian/proton-drive/usr/lib/proton-drive/proton-gui
+	install -Dm644 packaging/protond.service       debian/proton-drive/usr/lib/systemd/user/protond.service
+	install -Dm644 packaging/proton-drive.desktop  debian/proton-drive/usr/share/applications/proton-drive.desktop
+	install -Dm644 packaging/icons/proton-drive.svg debian/proton-drive/usr/share/icons/hicolor/scalable/apps/proton-drive.svg
+	ln -s /usr/lib/proton-drive/proton-drive       debian/proton-drive/usr/bin/proton-drive
+	ln -s /usr/lib/proton-drive/proton-gui         debian/proton-drive/usr/bin/proton-gui

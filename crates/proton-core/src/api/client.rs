@@ -6,7 +6,7 @@ use crate::{Error, Result};
 use crate::api::types::*;
 use crate::api::drive_types::*;
 
-/// Proton API base URL.
+/// Default Proton API base URL.
 const BASE_URL: &str = "https://mail.proton.me/api";
 
 /// Value sent in the `x-pm-appversion` header.
@@ -16,11 +16,30 @@ const APP_VERSION: &str = "Other/0.1.0";
 pub struct ApiClient {
     client: Client,
     session: Mutex<Option<Session>>,
+    base_url: String,
 }
 
 impl ApiClient {
-    /// Build a new client with default Proton headers.
+    /// Build a new client with default Proton headers and the production base URL.
     pub fn new() -> Result<Self> {
+        Self::with_base_url(BASE_URL)
+    }
+
+    /// Build a new client targeting the given base URL.
+    ///
+    /// If the URL uses `http://` (instead of `https://`), the `https_only`
+    /// restriction is lifted so the client can talk to a local mock server.
+    pub fn with_base_url(url: &str) -> Result<Self> {
+        let https_only = url.starts_with("https://");
+        let client = Self::build_client(https_only)?;
+        Ok(Self {
+            client,
+            session: Mutex::new(None),
+            base_url: url.to_string(),
+        })
+    }
+
+    fn build_client(https_only: bool) -> Result<Client> {
         let mut headers = header::HeaderMap::new();
         headers.insert(
             "x-pm-appversion",
@@ -31,12 +50,10 @@ impl ApiClient {
             header::HeaderValue::from_static("application/vnd.protonmail.v1+json"),
         );
 
-        let client = Client::builder()
+        Ok(Client::builder()
             .default_headers(headers)
-            .https_only(true)
-            .build()?;
-
-        Ok(Self { client, session: Mutex::new(None) })
+            .https_only(https_only)
+            .build()?)
     }
 
     /// Attach an existing session (used after login or token refresh).
@@ -56,7 +73,7 @@ impl ApiClient {
         let body = serde_json::json!({ "Username": username });
         let text = self
             .client
-            .post(format!("{BASE_URL}/auth/v4/info"))
+            .post(format!("{}/auth/v4/info", self.base_url))
             .json(&body)
             .send()
             .await?
@@ -74,7 +91,7 @@ impl ApiClient {
     pub async fn authenticate(&self, req: &AuthRequest) -> Result<AuthResponse> {
         let text = self
             .client
-            .post(format!("{BASE_URL}/auth/v4"))
+            .post(format!("{}/auth/v4", self.base_url))
             .json(req)
             .send()
             .await?
@@ -95,7 +112,7 @@ impl ApiClient {
 
         let text = self
             .client
-            .post(format!("{BASE_URL}/auth/v4/2fa"))
+            .post(format!("{}/auth/v4/2fa", self.base_url))
             .header(header::AUTHORIZATION, format!("Bearer {}", session.access_token))
             .header("x-pm-uid", &session.uid)
             .json(&req)
@@ -125,7 +142,7 @@ impl ApiClient {
 
         let text = self
             .client
-            .post(format!("{BASE_URL}/auth/v4/refresh"))
+            .post(format!("{}/auth/v4/refresh", self.base_url))
             .header("x-pm-uid", &session.uid)
             .json(&req)
             .send()
@@ -145,7 +162,7 @@ impl ApiClient {
         let session = self.require_session()?;
         let resp = self
             .client
-            .delete(format!("{BASE_URL}/auth/v4"))
+            .delete(format!("{}/auth/v4", self.base_url))
             .header(header::AUTHORIZATION, format!("Bearer {}", session.access_token))
             .header("x-pm-uid", &session.uid)
             .send()
@@ -382,7 +399,7 @@ impl ApiClient {
         body: &impl serde::Serialize,
     ) -> Result<String> {
         let session = self.require_session()?;
-        let url = format!("{BASE_URL}{path}");
+        let url = format!("{}{path}", self.base_url);
         let json = serde_json::to_vec(body)
             .map_err(|e| Error::Io(format!("serialize body: {e}")))?;
 
@@ -421,7 +438,7 @@ impl ApiClient {
         body: &impl serde::Serialize,
     ) -> Result<String> {
         let session = self.require_session()?;
-        let url = format!("{BASE_URL}{path}");
+        let url = format!("{}{path}", self.base_url);
         let json = serde_json::to_vec(body)
             .map_err(|e| Error::Io(format!("serialize body: {e}")))?;
 
@@ -483,7 +500,7 @@ impl ApiClient {
         let session = self.require_session()?;
         let resp = self
             .client
-            .get(format!("{BASE_URL}{path}"))
+            .get(format!("{}{path}", self.base_url))
             .header(header::AUTHORIZATION, format!("Bearer {}", session.access_token))
             .header("x-pm-uid", &session.uid)
             .send()
@@ -502,7 +519,7 @@ impl ApiClient {
         let new_session = self.refresh_and_update_session().await?;
         let resp = self
             .client
-            .get(format!("{BASE_URL}{path}"))
+            .get(format!("{}{path}", self.base_url))
             .header(header::AUTHORIZATION, format!("Bearer {}", new_session.access_token))
             .header("x-pm-uid", &new_session.uid)
             .send()

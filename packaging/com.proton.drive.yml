@@ -1,0 +1,46 @@
+id: com.proton.drive
+runtime: org.gnome.Platform
+runtime-version: '45'
+sdk: org.gnome.Sdk
+command: proton-gui
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --filesystem=home
+  - --talk-name=org.freedesktop.secrets
+  - --own-name=org.freedesktop.Notifications
+  - --socket=session-bus
+
+modules:
+  - name: libdbus
+    buildsystem: meson
+    sources:
+      - type: archive
+        url: https://dbus.freedesktop.org/releases/dbus/dbus-1.15.8.tar.xz
+        sha256: f17d6c8a5b6de71fe4dd6b01a8378ce5ebdd25ec247bcd1d7e5263ba3e1baabb
+
+  - name: libsecret
+    buildsystem: meson
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/libsecret/0.21/libsecret-0.21.2.tar.xz
+        sha256: 9ae4c02fa72f79cb74e25af3505d425ec1561a4276b1f2d566c6fdc577af737c
+
+  - name: proton-drive
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --workspace --exclude proton-gui
+      - cargo build --release -p proton-gui
+      - install -Dm755 target/release/protond /app/bin/protond
+      - install -Dm755 target/release/proton-drive /app/bin/proton-drive
+      - install -Dm755 target/release/proton-gui /app/bin/proton-gui
+      - install -Dm644 packaging/proton-drive.desktop /app/share/applications/com.proton.drive.desktop
+      - install -Dm644 packaging/icons/proton-drive.svg /app/share/icons/hicolor/scalable/apps/com.proton.drive.svg
+    build-options:
+      env:
+        CARGO_HOME: /run/build/proton-drive/cargo
+    sources:
+      - type: dir
+        path: ..

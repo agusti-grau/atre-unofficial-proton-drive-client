@@ -23,7 +23,7 @@
 
 pub mod keyring;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::ApiClient;
 use crate::api::drive_types::{Link, LinkState, LinkType, VolumeState};
@@ -36,7 +36,7 @@ const PAGE_SIZE: u32 = 150;
 // ── DriveNode ──────────────────────────────────────────────────────────────
 
 /// A node in the remote drive tree.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriveNode {
     pub share_id: String,
     pub link_id: String,

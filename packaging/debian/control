@@ -1,0 +1,22 @@
+Source: proton-drive
+Section: net
+Priority: optional
+Maintainer: Proton AG <support@proton.me>
+Build-Depends: debhelper-compat (= 13), cargo, rustc, pkg-config, libssl-dev, libdbus-1-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/ProtonMail/proton-drive-client
+Rules-Requires-Root: no
+
+Package: proton-drive
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libsecret-1-0, dbus
+Description: Proton Drive client for Linux
+ Proton Drive sync daemon, CLI client, and graphical interface.
+ Syncs files between your local machine and Proton Drive.
+ .
+ This package provides:
+  - protond: the sync daemon (systemd user service)
+  - proton-drive: command-line interface
+  - proton-gui: graphical user interface
+ .
+ Man pages are installed for proton-drive(1) and protond(1).

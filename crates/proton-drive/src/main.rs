@@ -14,6 +14,7 @@ use proton_core::drive::DriveClient;
 use proton_core::ipc::IpcClient;
 use proton_core::keyring;
 use proton_core::sync::SyncReport;
+use proton_core::t;
 
 // ── CLI definition ─────────────────────────────────────────────────────────
 
@@ -51,6 +52,14 @@ enum Commands {
     Status,
     /// Sync the local drive with the remote (requires protond to be running).
     Sync,
+    /// List or resolve conflicts.
+    Resolve {
+        /// Local path of the conflicted file (omit to list all conflicts).
+        path: Option<String>,
+        /// Strategy: "local" (keep local), "remote" (keep remote), "rename_local" (keep both).
+        #[arg(short, long)]
+        strategy: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -67,6 +76,15 @@ enum AuthCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing::Level::INFO.into())
+                .from_env_lossy(),
+        )
+        .with_target(true)
+        .init();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -74,6 +92,7 @@ async fn main() -> Result<()> {
         Commands::Ls { recursive, decrypt, .. } => cmd_ls(recursive, decrypt).await,
         Commands::Status => cmd_status().await,
         Commands::Sync => cmd_sync().await,
+        Commands::Resolve { path, strategy } => cmd_resolve(path, strategy).await,
     }
 }
 
@@ -173,7 +192,7 @@ async fn cmd_login() -> Result<()> {
     match result {
         LoginResult::Success(session) => {
             keyring::save_session(&session).await.context("Failed to save session to keyring")?;
-            println!("Logged in as {}.", session.username);
+            println!("{}", t!("status.logged_in", username = &session.username));
         }
         LoginResult::TwoFactorRequired(client) => {
             let code = prompt("2FA code (TOTP): ")?;
@@ -181,7 +200,7 @@ async fn cmd_login() -> Result<()> {
                 .await
                 .context("2FA failed")?;
             keyring::save_session(&session).await.context("Failed to save session to keyring")?;
-            println!("Logged in as {} (2FA verified).", session.username);
+            println!("{} (2FA verified).", t!("status.logged_in", username = &session.username));
         }
     }
 
@@ -191,12 +210,12 @@ async fn cmd_login() -> Result<()> {
 async fn cmd_logout() -> Result<()> {
     match keyring::load_session().await.context("Failed to read keyring")? {
         None => {
-            println!("Not logged in.");
+            println!("{}", t!("status.not_logged_in"));
         }
         Some(session) => {
             let username = session.username.clone();
             auth::logout(&session).await.context("Logout failed")?;
-            println!("Logged out from {}.", username);
+            println!("{}", t!("status.logged_in", username = &username));
         }
     }
     Ok(())
@@ -204,8 +223,8 @@ async fn cmd_logout() -> Result<()> {
 
 async fn cmd_auth_status() -> Result<()> {
     match keyring::load_session().await.context("Failed to read keyring")? {
-        None    => println!("Not logged in."),
-        Some(s) => println!("Logged in as {}.", s.username),
+        None    => println!("{}", t!("status.not_logged_in")),
+        Some(s) => println!("{}", t!("status.logged_in", username = &s.username)),
     }
     Ok(())
 }
@@ -230,7 +249,7 @@ async fn cmd_sync() -> Result<()> {
             .context("failed to parse sync report")?;
 
         if !report.errors.is_empty() {
-            println!("Sync completed with {} error(s):", report.errors.len());
+            println!("{}", t!("sync.errors", count = report.errors.len()));
             for err in &report.errors {
                 println!("  ⚠ {err}");
             }
@@ -238,14 +257,14 @@ async fn cmd_sync() -> Result<()> {
         }
 
         println!(
-            "Downloads: {} attempted, {} succeeded",
-            report.downloads_attempted, report.downloads_succeeded,
+            "{}",
+            t!("sync.downloads", attempted = report.downloads_attempted, succeeded = report.downloads_succeeded)
         );
         println!(
-            "Uploads:   {} attempted, {} succeeded",
-            report.uploads_attempted, report.uploads_succeeded,
+            "{}",
+            t!("sync.uploads", attempted = report.uploads_attempted, succeeded = report.uploads_succeeded)
         );
-        println!("Directories created: {}", report.dirs_created);
+        println!("{}", t!("sync.dirs_created", count = report.dirs_created));
     }
     Ok(())
 }
@@ -262,27 +281,77 @@ async fn cmd_status() -> Result<()> {
         let logged_in = result.get("logged_in").and_then(|v| v.as_bool()).unwrap_or(false);
         if logged_in {
             let username = result.get("username").and_then(|v| v.as_str()).unwrap_or("unknown");
-            println!("Logged in as {username}");
+            println!("{}", t!("status.logged_in", username = username));
 
             if let Some(db) = result.get("db") {
                 let total = db.get("total_nodes").and_then(|v| v.as_i64()).unwrap_or(0);
                 let synced = db.get("synced").and_then(|v| v.as_i64()).unwrap_or(0);
                 let pending = db.get("pending").and_then(|v| v.as_i64()).unwrap_or(0);
                 println!(
-                    "DB: {} total nodes ({} synced, {} pending)",
-                    total, synced, pending,
+                    "{}",
+                    t!("status.db_status", total = total, synced = synced, pending = pending)
                 );
             }
 
             if let Some(last_sync) = result.get("last_sync").and_then(|v| v.as_str()) {
                 if !last_sync.is_empty() {
-                    println!("Last sync: {last_sync}");
+                    println!("{}", t!("status.last_sync", time = last_sync));
                 }
             }
         } else {
-            println!("Not logged in");
+            println!("{}", t!("status.not_logged_in"));
         }
     }
+    Ok(())
+}
+
+// ── Conflict resolution ────────────────────────────────────────────────────
+
+async fn cmd_resolve(path: Option<String>, strategy: Option<String>) -> Result<()> {
+    let mut client = IpcClient::connect().await?;
+
+    match (path, strategy) {
+        (None, _) => {
+            // List all conflicts.
+            let resp = client.request("drive.conflicts", serde_json::json!({})).await?;
+            if let Some(err) = resp.error {
+                anyhow::bail!("list conflicts failed: {}", err.message);
+            }
+            if let Some(result) = resp.result {
+                let items = result.get("items").and_then(|v| v.as_array()).map(|a| a.clone()).unwrap_or_default();
+                if items.is_empty() {
+                    println!("{}", t!("conflict.no_conflicts"));
+                } else {
+                    println!("Conflicts:");
+                    for item in &items {
+                        let lp = item.get("local_path").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("  {lp}");
+                    }
+                    println!("\nResolve with: proton-drive resolve <path> --strategy <local|remote|rename_local>");
+                }
+            }
+        }
+        (Some(local_path), Some(strategy)) => {
+            let password = rpassword::prompt_password("Password (for key decryption): ")
+                .context("Failed to read password")?;
+
+            let resp = client.request("drive.resolve", serde_json::json!({
+                "local_path": local_path,
+                "strategy": strategy,
+                "password": password,
+            })).await?;
+
+            if let Some(err) = resp.error {
+                anyhow::bail!("resolve failed: {}", err.message);
+            }
+
+            println!("{}", t!("conflict.resolved", strategy = &strategy, path = &local_path));
+        }
+        (Some(_), None) => {
+            anyhow::bail!("--strategy is required when specifying a path. Use --strategy local, --strategy remote, or --strategy rename_local");
+        }
+    }
+
     Ok(())
 }
 

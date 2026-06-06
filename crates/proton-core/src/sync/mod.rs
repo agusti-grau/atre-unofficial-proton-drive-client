@@ -25,7 +25,8 @@ use crate::crypto::{
 use crate::db::{JobFields, NodeFields, StateDb};
 use crate::drive::keyring::{derive_key_password, DriveKeyring};
 use crate::drive::{DriveClient, DriveNode};
-use crate::local::LocalClient;
+use crate::local::{LocalClient, LocalNode};
+use crate::throttle::Throttle;
 use crate::{Error, Result};
 
 // ── SyncReport ─────────────────────────────────────────────────────────────
@@ -54,6 +55,8 @@ pub struct SyncEngine {
     api: ApiClient,
     db: Arc<StateDb>,
     base_path: PathBuf,
+    pub upload_throttle: Throttle,
+    pub download_throttle: Throttle,
 }
 
 /// Interim representation: a remote node with its plaintext name and local path.
@@ -65,14 +68,20 @@ struct RemoteEntry {
 
 impl SyncEngine {
     pub fn new(api: ApiClient, db: Arc<StateDb>, base_path: PathBuf) -> Self {
-        Self { api, db, base_path }
+        Self {
+            api,
+            db,
+            base_path,
+            upload_throttle: Throttle::new(0),
+            download_throttle: Throttle::new(0),
+        }
     }
 
     /// Run a full remote → local sync cycle.
     ///
     /// `password` is the user's login password, needed to decrypt remote
     /// file/folder names so they can be mapped to local paths.
-    pub async fn sync(&self, password: &str) -> Result<SyncReport> {
+    pub async fn sync(&mut self, password: &str) -> Result<SyncReport> {
         let mut report = SyncReport {
             dirs_created: 0,
             downloads_attempted: 0,
@@ -190,33 +199,7 @@ impl SyncEngine {
             remote_by_path.insert(e.local_path.clone(), (e.node.clone(), e.plain_name.clone()));
         }
 
-        // ── 5. Upload new/changed local files ──────────────────────────────
-        let share_id = entries.first().map(|e| e.node.share_id.clone()).unwrap_or_default();
-        let addr_ref = address_key_info.as_ref().map(|(k, p)| (k, p.as_slice()));
-
-        // Ensure remote folders exist for local-only directories.
-        let local_nodes = match LocalClient::new(self.base_path.clone()).walk_all().await {
-            Ok(nodes) => nodes,
-            Err(e) => {
-                report.errors.push(format!("local walk failed: {e}"));
-                return Ok(report);
-            }
-        };
-        self.ensure_remote_folders(
-            &mut report,
-            &share_id,
-            &kr,
-            &mut remote_by_path,
-            &local_nodes,
-            addr_ref,
-            &signature_address,
-        )
-        .await;
-
-        self.upload_new_files(&mut report, &share_id, &kr, &remote_by_path, addr_ref, &signature_address)
-            .await;
-
-        // ── 4. Sync files ─────────────────────────────────────────────────
+        // ── 4. Sync files with conflict detection ─────────────────────────
         for e in &entries {
             if !e.node.is_file() {
                 continue;
@@ -228,12 +211,51 @@ impl SyncEngine {
                 .ok()
                 .flatten();
 
-            let needs_download = match &exists {
+            let remote_changed = match &exists {
                 None => true,
                 Some(row) => row.size != e.node.size || row.modified_time != e.node.modify_time,
             };
 
-            if !needs_download {
+            if !remote_changed {
+                // File unchanged on remote — check local for upload below.
+                continue;
+            }
+
+            // Remote changed — check if local also changed (conflict).
+            let local_path = self.base_path.join(&e.local_path);
+            let local_changed = match (&exists, local_path.exists()) {
+                (Some(row), true) => {
+                    match LocalNode::from_path(local_path).await {
+                        Ok(local) => {
+                            let local_mtime = local.modified_time
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64;
+                            local.size as i64 != row.size || local_mtime != row.modified_time
+                        }
+                        Err(_) => false,
+                    }
+                }
+                _ => false,
+            };
+
+            if local_changed && remote_changed {
+                // Both sides changed — conflict.
+                report.errors.push(format!(
+                    "CONFLICT: {} changed both locally and remotely",
+                    e.local_path.display()
+                ));
+                self.db.upsert_node(&NodeFields {
+                    local_path: e.local_path.clone(),
+                    link_id: Some(e.node.link_id.clone()),
+                    share_id: Some(e.node.share_id.clone()),
+                    name_encrypted: e.node.encrypted_name.clone(),
+                    size: e.node.size,
+                    modified_time: e.node.modify_time,
+                    hash: None,
+                    is_file: true,
+                    state: "conflict".into(),
+                }).ok();
                 continue;
             }
 
@@ -264,6 +286,32 @@ impl SyncEngine {
                 Err(err) => report.errors.push(format!("download {}: {err}", e.node.link_id)),
             }
         }
+
+        // ── 5. Upload new/changed local files ──────────────────────────────
+        let share_id = entries.first().map(|e| e.node.share_id.clone()).unwrap_or_default();
+        let addr_ref = address_key_info.as_ref().map(|(k, p)| (k, p.as_slice()));
+
+        // Ensure remote folders exist for local-only directories.
+        let local_nodes = match LocalClient::new(self.base_path.clone()).walk_all().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                report.errors.push(format!("local walk failed: {e}"));
+                return Ok(report);
+            }
+        };
+        self.ensure_remote_folders(
+            &mut report,
+            &share_id,
+            &kr,
+            &mut remote_by_path,
+            &local_nodes,
+            addr_ref,
+            &signature_address,
+        )
+        .await;
+
+        self.upload_new_files(&mut report, &share_id, &kr, &remote_by_path, addr_ref, &signature_address)
+            .await;
 
         // Persist last sync timestamp.
         self.db.set_meta("last_sync", &Self::chrono_now_rfc3339()).ok();
@@ -312,8 +360,8 @@ impl SyncEngine {
 
     /// Download a single remote file to the local filesystem, decrypting
     /// block content using the node key from `kr`.
-    async fn download_file(
-        &self,
+    pub async fn download_file(
+        &mut self,
         node: &DriveNode,
         local_path: &Path,
         kr: &DriveKeyring,
@@ -354,12 +402,23 @@ impl SyncEngine {
             .await
             .map_err(|e| Error::Io(format!("create {}: {e}", full_path.display())))?;
 
-        for block in &revision.blocks {
-            let enc = self.api.download_block(&block.url).await?;
-            let pt = decrypt_block(&enc, &session_key, block.index)?;
-            tokio::io::AsyncWriteExt::write_all(&mut file, &pt)
-                .await
-                .map_err(|e| Error::Io(format!("write block: {e}")))?;
+        // Download blocks in parallel with a concurrency limit of 4,
+        // then decrypt and write in order.
+        for chunk in revision.blocks.chunks(4) {
+            let enc_results: Vec<Vec<u8>> = futures::future::try_join_all(
+                chunk
+                    .iter()
+                    .map(|block| self.api.download_block(&block.url)),
+            )
+            .await?;
+
+            for (enc, block) in enc_results.into_iter().zip(chunk) {
+                let pt = decrypt_block(&enc, &session_key, block.index)?;
+                self.download_throttle.acquire(pt.len()).await;
+                tokio::io::AsyncWriteExt::write_all(&mut file, &pt)
+                    .await
+                    .map_err(|e| Error::Io(format!("write block: {e}")))?;
+            }
         }
 
         // Mark synced in DB.
@@ -482,9 +541,15 @@ impl SyncEngine {
 
             // Sign passphrase with address key.
             let (pass_sig, sig_addr) = if let Some((addr_key, addr_pass)) = address_key {
-                let sig = pgp_sign(enc_pass.as_bytes(), &addr_key.private_key, addr_pass)
-                    .unwrap_or_default();
-                (sig, signature_address.to_string())
+                match pgp_sign(enc_pass.as_bytes(), &addr_key.private_key, addr_pass) {
+                    Ok(sig) => (sig, signature_address.to_string()),
+                    Err(e) => {
+                        report.errors.push(format!(
+                            "sign passphrase for dir {}: {e}", rel.display()
+                        ));
+                        continue;
+                    }
+                }
             } else {
                 (String::new(), signature_address.to_string())
             };
@@ -509,15 +574,30 @@ impl SyncEngine {
                         continue;
                     }
                 };
-                let parent_hash_key = pgp_decrypt(
+                let parent_hash_key = match pgp_decrypt(
                     &parent_node.node_hash_key,
                     parent_key,
                     parent_pass,
-                )
-                .unwrap_or_default();
+                ) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        report.errors.push(format!(
+                            "decrypt hash key for dir {}: {e}", rel.display()
+                        ));
+                        continue;
+                    }
+                };
 
                 name_hash = compute_name_hash(&parent_hash_key, dir_name);
-                enc_hash_key = pgp_encrypt(&hash_key, &node_key).unwrap_or_default();
+                enc_hash_key = match pgp_encrypt(&hash_key, &node_key) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        report.errors.push(format!(
+                            "encrypt hash key for dir {}: {e}", rel.display()
+                        ));
+                        continue;
+                    }
+                };
             }
 
             let req = CreateFolderReq {
@@ -569,7 +649,7 @@ impl SyncEngine {
     /// `(DriveNode, plain_name)` for the remote tree.  May be modified by
     /// [`ensure_remote_folders`] before this is called.
     async fn upload_new_files(
-        &self,
+        &mut self,
         report: &mut SyncReport,
         share_id: &str,
         kr: &DriveKeyring,
@@ -626,6 +706,13 @@ impl SyncEngine {
             };
 
             // Check DB to see if this file is already known.
+            // Skip files in conflict state — user must resolve first.
+            if let Ok(Some(conflict)) = self.db.get_node(&rel) {
+                if conflict.state == "conflict" {
+                    continue;
+                }
+            }
+
             let existing = self
                 .db
                 .list_nodes("synced")
@@ -718,12 +805,19 @@ impl SyncEngine {
                     }
                 };
 
-                let content_key_sig = pgp_sign(
+                let content_key_sig = match pgp_sign(
                     content_key_packet.as_bytes(),
                     node_key,
                     &node_passphrase,
-                )
-                .unwrap_or_default();
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        report.errors.push(format!(
+                            "sign content key for modified {}: {e}", rel.display()
+                        ));
+                        continue;
+                    }
+                };
 
                 let x_attr = serde_json::json!({
                     "contentKeyPacket": content_key_packet,
@@ -797,21 +891,37 @@ impl SyncEngine {
                     }
                 };
 
-                for (block_index, enc_data) in &encrypted_blocks {
-                    let url = match rev.block_list.iter().find(|b| b.index == *block_index) {
-                        Some(b) => &b.url,
-                        None => {
-                            report.errors.push(format!(
-                                "no upload URL for block {block_index} of modified {}",
-                                rel.display()
-                            ));
-                            continue;
-                        }
-                    };
+                // Upload blocks in parallel with a concurrency limit of 4.
+                for chunk in encrypted_blocks.chunks(4) {
+                    let mut upload_futures = Vec::with_capacity(chunk.len());
+                    let mut chunk_total = 0usize;
+                    let mut failed_url = false;
 
-                    if let Err(e) = self.api.upload_block(url, enc_data).await {
+                    for (block_index, enc_data) in chunk {
+                        chunk_total += enc_data.len();
+                        match rev.block_list.iter().find(|b| b.index == *block_index) {
+                            Some(b) => {
+                                upload_futures.push(self.api.upload_block(&b.url, enc_data));
+                            }
+                            None => {
+                                report.errors.push(format!(
+                                    "no upload URL for block {block_index} of modified {}",
+                                    rel.display()
+                                ));
+                                failed_url = true;
+                            }
+                        }
+                    }
+
+                    if failed_url {
+                        continue;
+                    }
+
+                    self.upload_throttle.acquire(chunk_total).await;
+
+                    if let Err(e) = futures::future::try_join_all(upload_futures).await {
                         report.errors.push(format!(
-                            "upload block {block_index} for modified {}: {e}",
+                            "upload blocks for modified {}: {e}",
                             rel.display()
                         ));
                         continue;
@@ -878,13 +988,19 @@ impl SyncEngine {
             };
 
             let (pass_sig, sig_addr) = if let Some((addr_key, addr_pass)) = address_key {
-                let sig = pgp_sign(
+                match pgp_sign(
                     encrypted_passphrase.as_bytes(),
                     &addr_key.private_key,
                     addr_pass,
-                )
-                .unwrap_or_default();
-                (sig, signature_address.to_string())
+                ) {
+                    Ok(sig) => (sig, signature_address.to_string()),
+                    Err(e) => {
+                        report.errors.push(format!(
+                            "sign passphrase for {}: {e}", rel.display()
+                        ));
+                        continue;
+                    }
+                }
             } else {
                 (String::new(), signature_address.to_string())
             };
@@ -907,15 +1023,30 @@ impl SyncEngine {
                         continue;
                     }
                 };
-                let parent_hash_key = pgp_decrypt(
+                let parent_hash_key = match pgp_decrypt(
                     &parent_node.node_hash_key,
                     parent_key,
                     parent_pass,
-                )
-                .unwrap_or_default();
+                ) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        report.errors.push(format!(
+                            "decrypt hash key for {}: {e}", rel.display()
+                        ));
+                        continue;
+                    }
+                };
 
                 name_hash = compute_name_hash(&parent_hash_key, &file_name);
-                enc_hash_key = pgp_encrypt(&hash_key, &node_key_armored).unwrap_or_default();
+                enc_hash_key = match pgp_encrypt(&hash_key, &node_key_armored) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        report.errors.push(format!(
+                            "encrypt hash key for {}: {e}", rel.display()
+                        ));
+                        continue;
+                    }
+                };
             }
 
             let node_key_for_content = node_key_armored.clone();
@@ -955,12 +1086,19 @@ impl SyncEngine {
                 }
             };
 
-            let content_key_sig = pgp_sign(
+            let content_key_sig = match pgp_sign(
                 content_key_packet.as_bytes(),
                 &node_key_for_content,
                 &node_passphrase,
-            )
-            .unwrap_or_default();
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    report.errors.push(format!(
+                        "sign content key for {}: {e}", rel.display()
+                    ));
+                    continue;
+                }
+            };
 
             let x_attr = serde_json::json!({
                 "contentKeyPacket": content_key_packet,
@@ -1030,21 +1168,37 @@ impl SyncEngine {
                 }
             };
 
-            for (block_index, enc_data, _) in &encrypted_blocks {
-                let url = match rev.block_list.iter().find(|b| b.index == *block_index) {
-                    Some(b) => &b.url,
-                    None => {
-                        report.errors.push(format!(
-                            "no upload URL for block {block_index} of {}",
-                            rel.display()
-                        ));
-                        continue;
-                    }
-                };
+            // Upload blocks in parallel with a concurrency limit of 4.
+            for chunk in encrypted_blocks.chunks(4) {
+                let mut upload_futures = Vec::with_capacity(chunk.len());
+                let mut chunk_total = 0usize;
+                let mut failed_url = false;
 
-                if let Err(e) = self.api.upload_block(url, enc_data).await {
+                for (block_index, enc_data, _) in chunk {
+                    chunk_total += enc_data.len();
+                    match rev.block_list.iter().find(|b| b.index == *block_index) {
+                        Some(b) => {
+                            upload_futures.push(self.api.upload_block(&b.url, enc_data));
+                        }
+                        None => {
+                            report.errors.push(format!(
+                                "no upload URL for block {block_index} of {}",
+                                rel.display()
+                            ));
+                            failed_url = true;
+                        }
+                    }
+                }
+
+                if failed_url {
+                    continue;
+                }
+
+                self.upload_throttle.acquire(chunk_total).await;
+
+                if let Err(e) = futures::future::try_join_all(upload_futures).await {
                     report.errors.push(format!(
-                        "upload block {block_index} for {}: {e}",
+                        "upload blocks for {}: {e}",
                         rel.display()
                     ));
                     continue;
