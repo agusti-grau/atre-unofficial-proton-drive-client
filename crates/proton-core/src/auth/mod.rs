@@ -7,6 +7,7 @@ pub mod srp;
 
 use crate::api::{ApiClient, Session};
 use crate::api::types::AuthRequest;
+use crate::crypto;
 use crate::{Error, Result};
 
 /// Outcome of a completed login attempt.
@@ -45,8 +46,8 @@ pub async fn login(username: &str, password: &str) -> Result<LoginResult> {
     // Returns the full 60-byte bcrypt string for use as SRP x input.
     let bcrypt_output = password::hash_password(password, &info.salt)?;
 
-    // ── Step 3: Decode modulus (strip PGP signed-message envelope) ─────────
-    let modulus_bytes = srp::decode_modulus(&info.modulus)?;
+    // ── Step 3: Verify PGP signature on modulus and decode ────────────────
+    let modulus_bytes = crypto::verify_modulus_signature(&info.modulus)?;
 
     // ── Step 4: Compute SRP-6a proofs ─────────────────────────────────────
     let proof = srp::generate_srp_proof(
@@ -95,7 +96,6 @@ pub async fn complete_2fa(client: &ApiClient, totp_code: &str) -> Result<Session
     client.submit_2fa(totp_code).await?;
     client
         .session()
-        .cloned()
         .ok_or_else(|| Error::Auth("No session on client after 2FA".into()))
 }
 
@@ -115,6 +115,6 @@ pub async fn refresh_session(session: &Session) -> Result<Session> {
 pub async fn logout(session: &Session) -> Result<()> {
     let client = ApiClient::new()?.with_session(session.clone());
     client.logout().await?;
-    crate::keyring::delete_session()?;
+    crate::keyring::delete_session().await?;
     Ok(())
 }

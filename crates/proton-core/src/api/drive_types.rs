@@ -50,6 +50,17 @@ impl<'de> Deserialize<'de> for VolumeState {
     }
 }
 
+impl Serialize for VolumeState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let n: i32 = match self {
+            Self::Active => 1,
+            Self::Locked => 3,
+            Self::Other(n) => *n,
+        };
+        s.serialize_i32(n)
+    }
+}
+
 // ── Share ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,6 +122,18 @@ impl<'de> Deserialize<'de> for ShareType {
     }
 }
 
+impl Serialize for ShareType {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let n: i32 = match self {
+            Self::Main => 1,
+            Self::Standard => 2,
+            Self::Device => 3,
+            Self::Other(n) => *n,
+        };
+        s.serialize_i32(n)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShareState {
     Active,
@@ -134,6 +157,17 @@ impl<'de> Deserialize<'de> for ShareState {
     }
 }
 
+impl Serialize for ShareState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let n: i32 = match self {
+            Self::Active => 1,
+            Self::Deleted => 2,
+            Self::Other(n) => *n,
+        };
+        s.serialize_i32(n)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShareFlags {
     None,
@@ -154,6 +188,17 @@ impl From<i32> for ShareFlags {
 impl<'de> Deserialize<'de> for ShareFlags {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         Ok(Self::from(i32::deserialize(d)?))
+    }
+}
+
+impl Serialize for ShareFlags {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let n: i32 = match self {
+            Self::None => 0,
+            Self::Primary => 1,
+            Self::Other(n) => *n,
+        };
+        s.serialize_i32(n)
     }
 }
 
@@ -264,6 +309,17 @@ impl<'de> Deserialize<'de> for LinkType {
     }
 }
 
+impl Serialize for LinkType {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let tag = match self {
+            Self::Folder => "folder",
+            Self::File => "file",
+            Self::Other(n) => return s.serialize_i32(*n),
+        };
+        s.serialize_str(tag)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkState {
     Draft,
@@ -290,6 +346,20 @@ impl From<i32> for LinkState {
 impl<'de> Deserialize<'de> for LinkState {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         Ok(Self::from(i32::deserialize(d)?))
+    }
+}
+
+impl Serialize for LinkState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let tag = match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Trashed => "trashed",
+            Self::Deleted => "deleted",
+            Self::Restoring => "restoring",
+            Self::Other(n) => return s.serialize_i32(*n),
+        };
+        s.serialize_str(tag)
     }
 }
 
@@ -320,6 +390,49 @@ impl<'de> Deserialize<'de> for RevisionState {
     }
 }
 
+impl Serialize for RevisionState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let tag = match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Obsolete => "obsolete",
+            Self::Deleted => "deleted",
+            Self::Other(n) => return s.serialize_i32(*n),
+        };
+        s.serialize_str(tag)
+    }
+}
+
+// ── Revision (file content) ───────────────────────────────────────────────
+
+/// A single revision of a file, returned by `GET .../revisions/{id}`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Revision {
+    #[serde(rename = "ID")]
+    pub id: String,
+    pub create_time: i64,
+    pub size: i64,
+    pub state: RevisionState,
+    pub manifest_signature: String,
+    pub signature_address: String,
+    pub x_attr: String,
+    pub blocks: Vec<Block>,
+}
+
+/// One encrypted block within a revision.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Block {
+    pub index: u32,
+    pub size: u64,
+    pub enc_signature: String,
+    pub hash: String,
+    /// Pre-signed download URL for this block.
+    pub url: String,
+    pub enc_sha256: String,
+}
+
 // ── Folder-create request ──────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -340,4 +453,89 @@ pub struct CreateFolderReq {
 pub struct CreateFolderRes {
     #[serde(rename = "ID")]
     pub id: String,
+}
+
+// ── File-create request ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreateFileReq {
+    #[serde(rename = "ParentLinkID")]
+    pub parent_link_id: String,
+    #[serde(rename = "NodeHashKey")]
+    pub node_hash_key: String,
+    pub name: String,
+    pub hash: String,
+    #[serde(rename = "NodeKey")]
+    pub node_key: String,
+    #[serde(rename = "NodePassphrase")]
+    pub node_passphrase: String,
+    #[serde(rename = "NodePassphraseSignature")]
+    pub node_passphrase_signature: String,
+    #[serde(rename = "SignatureAddress")]
+    pub signature_address: String,
+    #[serde(rename = "MIMEType")]
+    pub mime_type: String,
+    pub size: i64,
+}
+
+// ── Create-link response ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreateLinkRes {
+    #[serde(rename = "ID")]
+    pub id: String,
+}
+
+// ── Block-list entry for revision creation ─────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct BlockEntry {
+    /// SHA-256 hash of the **plaintext** block.
+    pub hash: String,
+    /// PGP signature of the block plaintext, armored.
+    pub enc_signature: String,
+    /// Size of the **plaintext** block.
+    pub size: u64,
+    /// 0-based index.
+    pub index: u32,
+}
+
+// ── Create-revision request / response ─────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreateRevisionReq {
+    #[serde(rename = "BlockList")]
+    pub block_list: Vec<BlockEntry>,
+    pub manifest_signature: String,
+    pub signature_address: String,
+    #[serde(rename = "XAttr")]
+    pub x_attr: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreateRevisionRes {
+    #[serde(rename = "ID")]
+    pub id: String,
+    /// Pre-signed upload URLs for each block, in order.
+    #[serde(rename = "BlockList")]
+    pub block_list: Vec<BlockUploadUrl>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct BlockUploadUrl {
+    pub index: u32,
+    /// Pre-signed URL to PUT the encrypted block data.
+    pub url: String,
+}
+
+// ── Revision-state request (complete / activate) ───────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct UpdateRevisionStateReq {
+    pub state: i32,
 }

@@ -23,6 +23,8 @@
 
 pub mod keyring;
 
+use serde::Serialize;
+
 use crate::api::ApiClient;
 use crate::api::drive_types::{Link, LinkState, LinkType, VolumeState};
 use crate::drive::keyring::{derive_key_password, DriveKeyring};
@@ -34,7 +36,7 @@ const PAGE_SIZE: u32 = 150;
 // ── DriveNode ──────────────────────────────────────────────────────────────
 
 /// A node in the remote drive tree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DriveNode {
     pub share_id: String,
     pub link_id: String,
@@ -42,7 +44,10 @@ pub struct DriveNode {
     pub link_type: LinkType,
     /// PGP-encrypted name as returned by the API.
     /// Use `display_name()` for a printable representation.
+    #[serde(rename = "name")]
     pub encrypted_name: String,
+    /// HMAC of the plaintext name (for collision detection).
+    pub hash: String,
     pub size: i64,
     pub state: LinkState,
     pub mime_type: String,
@@ -55,6 +60,9 @@ pub struct DriveNode {
     /// PGP-armored passphrase for `node_key` (encrypted with the parent's node key,
     /// or with the share key for the root link).
     pub node_passphrase: String,
+    /// PGP-armored HMAC key used to hash child names.
+    /// Only present on folders.
+    pub node_hash_key: String,
 }
 
 impl DriveNode {
@@ -65,6 +73,7 @@ impl DriveNode {
             parent_link_id: link.parent_link_id,
             link_type: link.link_type,
             encrypted_name: link.name,
+            hash: link.hash,
             size: link.size,
             state: link.state,
             mime_type: link.mime_type,
@@ -72,6 +81,11 @@ impl DriveNode {
             modify_time: link.modify_time,
             node_key: link.node_key,
             node_passphrase: link.node_passphrase,
+            node_hash_key: link
+                .folder_properties
+                .as_ref()
+                .map(|p| p.node_hash_key.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -269,13 +283,16 @@ impl DriveClient {
     /// Calls `visitor` for every node encountered.  Node keys are unlocked
     /// depth-first as folders are entered, so the keyring grows as the walk
     /// descends.  `visitor` receives the node and its plaintext name.
+    ///
+    /// Returns the populated `DriveKeyring` so callers can later decrypt
+    /// file content key packets (see [`crate::crypto::decrypt_session_key`]).
     pub async fn walk_decrypted<F>(
         &self,
         user_password: &str,
         visitor: &mut F,
-    ) -> Result<()>
+    ) -> Result<DriveKeyring>
     where
-        F: FnMut(&DriveNode, &str),
+        F: FnMut(&DriveNode, &str) + Send,
     {
         let (mut kr, share_id, root_link_id) = self.build_keyring(user_password).await?;
         Box::pin(self.walk_decrypted_inner(
@@ -285,7 +302,8 @@ impl DriveClient {
             &mut kr,
             visitor,
         ))
-        .await
+        .await?;
+        Ok(kr)
     }
 
     /// Walk all nodes under `folder_link_id` with decrypted names.
@@ -301,9 +319,9 @@ impl DriveClient {
         parent_key_id: &'a str,
         kr: &'a mut DriveKeyring,
         visitor: &'a mut F,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>>
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>
     where
-        F: FnMut(&DriveNode, &str),
+        F: FnMut(&DriveNode, &str) + Send,
     {
         Box::pin(async move {
             let children = self.list_children(share_id, folder_link_id).await?;
@@ -345,15 +363,19 @@ impl DriveClient {
     }
 
     /// Walk the entire drive and return `(node, plaintext_name)` pairs.
+    ///
+    /// Also returns the populated [`DriveKeyring`] keyed by link/share ID,
+    /// useful for subsequent file-content decryption.
     pub async fn walk_all_decrypted(
         &self,
         user_password: &str,
-    ) -> Result<Vec<(DriveNode, String)>> {
+    ) -> Result<(Vec<(DriveNode, String)>, DriveKeyring)> {
         let mut items = Vec::new();
-        self.walk_decrypted(user_password, &mut |node, name| {
-            items.push((node.clone(), name.to_string()));
-        })
-        .await?;
-        Ok(items)
+        let kr = self
+            .walk_decrypted(user_password, &mut |node, name| {
+                items.push((node.clone(), name.to_string()));
+            })
+            .await?;
+        Ok((items, kr))
     }
 }

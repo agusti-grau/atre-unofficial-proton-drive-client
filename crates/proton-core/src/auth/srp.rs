@@ -152,8 +152,9 @@ pub fn generate_srp_proof(
 /// -----BEGIN PGP SIGNATURE-----
 /// …
 /// ```
-/// TODO: verify the PGP signature against Proton's published signing key
-///       (fingerprint: 248097092b458509c508dac0350585c4e9518f26).
+///
+/// Note: Signature verification is now handled by
+/// [`crate::crypto::verify_modulus_signature`] before this is called.
 pub fn decode_modulus(pgp_or_b64: &str) -> Result<Vec<u8>> {
     let b64 = if pgp_or_b64.contains("-----BEGIN PGP SIGNED MESSAGE-----") {
         let after_headers = pgp_or_b64

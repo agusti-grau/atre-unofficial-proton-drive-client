@@ -28,4 +28,10 @@ pub enum Error {
 
     #[error("UTF-8 decode error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
+
+    #[error("IO error: {0}")]
+    Io(String),
+
+    #[error("Database error: {0}")]
+    Db(String),
 }

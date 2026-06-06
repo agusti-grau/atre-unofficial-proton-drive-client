@@ -38,10 +38,11 @@ use std::collections::HashMap;
 
 use crate::api::drive_types::Share;
 use crate::auth::password::hash_password;
-use crate::crypto::pgp_decrypt;
+use crate::crypto::{pgp_decrypt, pgp_encrypt};
 use crate::{Error, Result};
 
 /// Stored representation of one PGP private key.
+#[derive(Debug, Clone)]
 struct KeyEntry {
     /// PGP-armored private key (locked with `passphrase`).
     armored_key: String,
@@ -54,6 +55,7 @@ struct KeyEntry {
 /// Keys are indexed by their own ID — either a `share_id` (for the share key)
 /// or a `link_id` (for node keys).  The caller is responsible for providing the
 /// correct parent ID when unlocking a new key.
+#[derive(Debug, Clone)]
 pub struct DriveKeyring {
     keys: HashMap<String, KeyEntry>,
 }
@@ -132,6 +134,17 @@ impl DriveKeyring {
         Ok(())
     }
 
+    // ── Access ─────────────────────────────────────────────────────────────
+
+    /// Borrow the key material for a given ID (share_id or link_id).
+    ///
+    /// Returns `(armored_key, passphrase)`.
+    pub fn get_key(&self, id: &str) -> Option<(&str, &[u8])> {
+        self.keys
+            .get(id)
+            .map(|e| (e.armored_key.as_str(), e.passphrase.as_slice()))
+    }
+
     // ── Decryption ─────────────────────────────────────────────────────────
 
     /// Decrypt an armored name string using the key stored under `parent_id`.
@@ -147,6 +160,24 @@ impl DriveKeyring {
             pgp_decrypt(encrypted_name, &parent.armored_key, &parent.passphrase)?;
         String::from_utf8(plaintext)
             .map_err(|e| Error::Crypto(format!("decrypted name is not valid UTF-8: {e}")))
+    }
+
+    // ── Encryption ───────────────────────────────────────────────────────────
+
+    /// Encrypt a plaintext name string using the key stored under `parent_id`.
+    ///
+    /// Returns the PGP-armored ciphertext. `parent_id` must refer to a key that
+    /// has been previously unlocked (a share_id or link_id).
+    ///
+    /// The passphrase is **not** needed for encryption — PGP encryption uses
+    /// the public-key material of the secret key, which is available without
+    /// unlocking.
+    pub fn encrypt_name_raw(&self, plaintext_name: &str, parent_id: &str) -> Result<String> {
+        let parent = self.keys.get(parent_id).ok_or_else(|| {
+            Error::Crypto(format!("no key found for parent id '{parent_id}'"))
+        })?;
+
+        pgp_encrypt(plaintext_name.as_bytes(), &parent.armored_key)
     }
 }
 

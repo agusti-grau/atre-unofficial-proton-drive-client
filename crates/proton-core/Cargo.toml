@@ -20,3 +20,9 @@ base64   = "0.22"
 keyring  = { version = "3", features = ["async-secret-service", "tokio", "crypto-rust"] }
 zeroize  = { version = "1", features = ["derive"] }
 pgp      = { version = "0.14", default-features = false }
+rusqlite = { workspace = true }
+aes      = "0.8"
+cbc      = "0.1"
+smallvec = "1"
+hex      = "0.4"
+hmac     = "0.12"
