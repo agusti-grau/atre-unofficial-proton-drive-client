@@ -1,4 +1,4 @@
-//! `proton-drive` — CLI client for the Proton Drive sync daemon.
+//! `proton-drive` — unofficial CLI client for the Proton Drive sync daemon.
 //!
 //! Communicates with `protond` over a Unix socket (TODO).
 //! For now, auth commands call `proton-core` directly.
@@ -21,7 +21,7 @@ use proton_core::t;
 #[derive(Parser)]
 #[command(
     name = "proton-drive",
-    about = "Proton Drive client for Linux",
+    about = "Unofficial Proton Drive client for Linux — not affiliated with Proton AG",
     version
 )]
 struct Cli {

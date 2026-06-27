@@ -1,4 +1,4 @@
-//! `protond` — Proton Drive sync daemon.
+//! `protond` — unofficial Proton Drive sync daemon.
 //!
 //! Listens on a Unix domain socket at `$XDG_RUNTIME_DIR/protond.sock`
 //! for IPC requests, watches `~/Proton Drive/` via inotify, and runs
