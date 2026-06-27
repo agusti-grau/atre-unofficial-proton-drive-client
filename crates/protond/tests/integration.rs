@@ -241,6 +241,7 @@ fn drive_delete_missing_params() {
     });
 }
 
+#[test]
 fn concurrent_connections() {
     let d = Daemon::start();
     let rt = tokio::runtime::Runtime::new().unwrap();

@@ -30,6 +30,7 @@ fn translations() -> &'static Translations {
         en.insert("browse.keep_remote", "Keep Remote");
         en.insert("browse.rename", "Rename");
         en.insert("status.logged_in", "Logged in as {username}");
+        en.insert("status.logged_out", "Logged out {username}");
         en.insert("status.not_logged_in", "Not logged in");
         en.insert("status.db_status", "DB: {total} total nodes ({synced} synced, {pending} pending)");
         en.insert("status.last_sync", "Last sync: {time}");
@@ -108,6 +109,7 @@ fn translations() -> &'static Translations {
         ca.insert("browse.keep_remote", "Mantén remot");
         ca.insert("browse.rename", "Reanomena");
         ca.insert("status.logged_in", "Sessió iniciada com a {username}");
+        ca.insert("status.logged_out", "Sessió tancada {username}");
         ca.insert("status.not_logged_in", "No has iniciat sessió");
         ca.insert("status.db_status", "BD: {total} nodes totals ({synced} sincronitzats, {pending} pendents)");
         ca.insert("status.last_sync", "Darrera sincronització: {time}");

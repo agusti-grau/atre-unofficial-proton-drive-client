@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal;
 use tokio::sync::mpsc;
@@ -38,18 +40,41 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let socket_path = ipc::socket_path();
+    let socket_dir = ipc::socket_dir();
 
-    // Remove stale socket file from a previous run.
-    let _ = std::fs::remove_file(&socket_path);
+    // Single-instance guard.
+    let _lock = acquire_instance_lock(&socket_dir)?;
+
+    // Ensure the socket directory exists with restrictive permissions.
+    std::fs::create_dir_all(&socket_dir).ok();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700));
+    }
+
+    // Remove stale socket file from a previous run, but only if it is actually a
+    // socket owned by us.
+    if let Ok(meta) = std::fs::symlink_metadata(&socket_path) {
+        if meta.file_type().is_socket() {
+            let _ = std::fs::remove_file(&socket_path);
+        }
+    }
 
     let listener = UnixListener::bind(&socket_path)?;
+    ipc::set_socket_permissions(std::path::Path::new(&socket_path))?;
     tracing::info!("protond listening on {socket_path}");
 
     let db = Arc::new(StateDb::open(&StateDb::default_dir())?);
     let base_path = data_dir();
 
-    // Ensure the base directory exists.
+    // Ensure the base directory exists with owner-only permissions.
     std::fs::create_dir_all(&base_path).ok();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&base_path, std::fs::Permissions::from_mode(0o700));
+    }
 
     // ── Channels for triggering sync ───────────────────────────────────────
     let (sync_tx, mut sync_rx) = mpsc::channel::<()>(64);
@@ -77,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Accept IPC connections ────────────────────────────────────────────
+    let daemon_uid = unsafe { libc::getuid() };
     let accept_cancel = cancel.clone();
     let accept_handle = tokio::spawn(async move {
         loop {
@@ -90,6 +116,20 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
                     };
+
+                    // Authenticate the peer: only the same user may connect.
+                    let (stream, peer_uid) = match ipc::peer_uid(stream).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!("rejected connection: {e}");
+                            continue;
+                        }
+                    };
+                    if peer_uid != daemon_uid {
+                        tracing::warn!("rejected connection from uid {peer_uid} (expected {daemon_uid})");
+                        continue;
+                    }
+
                     let h = Arc::clone(&handler);
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(stream, &h).await {
@@ -120,7 +160,31 @@ fn data_dir() -> PathBuf {
     }
     std::env::var("HOME")
         .map(|h| PathBuf::from(h).join("Proton Drive"))
-        .unwrap_or_else(|_| PathBuf::from("/tmp/Proton Drive"))
+        .unwrap_or_else(|_| PathBuf::from("/var/lib/proton-drive/data"))
+}
+
+/// Acquire an advisory file lock to ensure only one daemon instance runs.
+fn acquire_instance_lock(dir: &std::path::Path) -> anyhow::Result<std::fs::File> {
+    std::fs::create_dir_all(dir)?;
+    let lock_path = dir.join("protond.lock");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            anyhow::bail!("another protond instance is already running (lock held)");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        anyhow::bail!("single-instance lock not implemented for this platform");
+    }
+    Ok(file)
 }
 
 /// Background loop that triggers sync cycles on timer or external events.
@@ -172,8 +236,7 @@ async fn handle_connection(
     let mut line = String::new();
 
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
+        let n = ipc::read_line_limited(&mut reader, &mut line, ipc::MAX_LINE_LEN).await?;
         if n == 0 {
             return Ok(());
         }

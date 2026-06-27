@@ -17,7 +17,6 @@ use pgp::composed::cleartext::CleartextSignedMessage;
 use pgp::composed::KeyType;
 use pgp::crypto::hash::HashAlgorithm;
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
-use pgp::types::{PublicKeyTrait, SecretKeyTrait};
 use pgp::{ArmorOptions, Deserializable, Message, SignedPublicKey, SignedSecretKey};
 use rand::rngs::OsRng;
 
@@ -280,38 +279,39 @@ pub fn generate_node_keypair() -> Result<(String, Vec<u8>)> {
 /// `armored_key` must be a passphrase-protected PGP private key.
 /// The passphrase is supplied as raw bytes (e.g. the 32-byte key passphrase).
 pub fn pgp_sign(data: &[u8], armored_key: &str, passphrase: &[u8]) -> Result<String> {
+    use std::io::Cursor;
+
     use pgp::composed::StandaloneSignature;
-    use pgp::packet::Signature;
-    use pgp::packet::SignatureType;
-    use pgp::types::Version;
+    use pgp::packet::{SignatureConfig, SignatureType, Subpacket};
+    use pgp::types::PublicKeyTrait;
 
     let (key, _) = SignedSecretKey::from_armor_single(Cursor::new(armored_key.as_bytes()))
         .map_err(|e| Error::Crypto(format!("key parse: {e}")))?;
 
-    let pass_str = String::from_utf8_lossy(passphrase).into_owned();
-    let sig_bytes = key
-        .create_signature(|| pass_str, HashAlgorithm::SHA2_256, data)
-        .map_err(|e| Error::Crypto(format!("sign: {e}")))?;
-
-    // Try to extract the hash algorithm and other metadata from the key's own signature packet.
-    // We build a minimal v4 signature packet wrapping the raw bytes.
-    // The `signed_hash_value` and subpackets are best-effort for now.
-    let hashed_subpackets = vec![];
-    let unhashed_subpackets = vec![];
-    let signed_hash_value = [0u8; 2];
-
-    let sig_packet = Signature::v4(
-        Version::New,
+    let mut config = SignatureConfig::v4(
         SignatureType::Binary,
         key.algorithm(),
         HashAlgorithm::SHA2_256,
-        signed_hash_value,
-        sig_bytes,
-        hashed_subpackets,
-        unhashed_subpackets,
     );
 
-    let standalone = StandaloneSignature::new(sig_packet);
+    config.hashed_subpackets.push(Subpacket::regular(
+        pgp::packet::SubpacketData::SignatureCreationTime(chrono::Utc::now()),
+    ));
+    config.hashed_subpackets.push(Subpacket::regular(
+        pgp::packet::SubpacketData::IssuerFingerprint(key.fingerprint()),
+    ));
+    config
+        .unhashed_subpackets
+        .push(Subpacket::regular(pgp::packet::SubpacketData::Issuer(
+            key.key_id(),
+        )));
+
+    let pass_str = String::from_utf8_lossy(passphrase).into_owned();
+    let signature = config
+        .sign(&key, || pass_str, &mut Cursor::new(data))
+        .map_err(|e| Error::Crypto(format!("sign: {e}")))?;
+
+    let standalone = StandaloneSignature::new(signature);
     standalone
         .to_armored_string(None.into())
         .map_err(|e| Error::Crypto(format!("armor signature: {e}")))

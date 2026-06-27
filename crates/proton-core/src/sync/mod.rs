@@ -154,12 +154,27 @@ impl SyncEngine {
 
         let mut local_paths: Vec<PathBuf> = vec![PathBuf::new(); entries.len()];
         for &i in &order {
-            let name = sanitize_name(&entries[i].plain_name);
-            let parent_path = match &entries[i].node.parent_link_id {
-                Some(pid) => {
-                    let pidx = *by_link.get(pid).unwrap();
-                    local_paths[pidx].clone()
+            let name = match sanitize_name(&entries[i].plain_name) {
+                Ok(n) => n,
+                Err(e) => {
+                    report.errors.push(format!(
+                        "invalid name for link {}: {e}",
+                        entries[i].node.link_id
+                    ));
+                    continue;
                 }
+            };
+            let parent_path = match &entries[i].node.parent_link_id {
+                Some(pid) => match by_link.get(pid) {
+                    Some(&pidx) => local_paths[pidx].clone(),
+                    None => {
+                        report.errors.push(format!(
+                            "parent link {pid} not found for {}",
+                            entries[i].node.link_id
+                        ));
+                        continue;
+                    }
+                },
                 None => PathBuf::new(),
             };
             local_paths[i] = parent_path.join(name);
@@ -174,7 +189,20 @@ impl SyncEngine {
             if !e.node.is_folder() {
                 continue;
             }
-            let full = self.base_path.join(&e.local_path);
+            if e.local_path.as_os_str().is_empty() {
+                // Root folder — nothing to create locally.
+                continue;
+            }
+            let full = match resolve_safe_path(&self.base_path, &e.local_path) {
+                Ok(p) => p,
+                Err(err) => {
+                    report.errors.push(format!(
+                        "invalid directory path {}: {err}",
+                        e.local_path.display()
+                    ));
+                    continue;
+                }
+            };
             if !full.exists() {
                 if let Err(err) = std::fs::create_dir_all(&full) {
                     report
@@ -413,7 +441,20 @@ impl SyncEngine {
             .get_revision(&node.share_id, &node.link_id, &rev_meta.id)
             .await?;
 
-        let full_path = self.base_path.join(local_path);
+        let full_path = resolve_safe_path(&self.base_path, local_path)?;
+
+        // Refuse to overwrite an existing symlink — could point outside the sync dir.
+        if tokio::fs::symlink_metadata(&full_path)
+            .await
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(Error::Io(format!(
+                "refusing to write through symlink {}",
+                full_path.display()
+            )));
+        }
+
         if let Some(parent) = full_path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -1539,9 +1580,46 @@ fn guess_mime(name: &str) -> String {
     .to_string()
 }
 
-/// Replace characters unsafe for the local filesystem.
-fn sanitize_name(name: &str) -> String {
-    name.replace('/', "_")
+/// Validate a single path component so it cannot be `.`, `..`, contain path
+/// separators, null bytes, or other unsafe characters.
+fn validate_name(name: &str) -> Result<&str> {
+    if name.is_empty() {
+        return Err(Error::Io("empty file or folder name".into()));
+    }
+    if name.contains('\0') {
+        return Err(Error::Io("name contains null byte".into()));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(Error::Io(format!("name contains path separator: {name}")));
+    }
+    if name == "." || name == ".." {
+        return Err(Error::Io(format!("reserved name: {name}")));
+    }
+    Ok(name)
+}
+
+/// Validate a remote name so it is safe to use as a local filesystem
+/// component.
+fn sanitize_name(name: &str) -> Result<String> {
+    validate_name(name).map(|n| n.to_string())
+}
+
+/// Ensure that `base_path.join(local_path)` resolves to a location strictly
+/// inside `base_path`. Returns the absolute, canonicalised path.
+fn resolve_safe_path(base_path: &Path, local_path: &Path) -> Result<PathBuf> {
+    let base = base_path
+        .canonicalize()
+        .unwrap_or_else(|_| base_path.to_path_buf());
+    let combined = base.join(local_path);
+    let resolved = combined.canonicalize().unwrap_or(combined.clone());
+
+    if !resolved.starts_with(&base) {
+        return Err(Error::Io(format!(
+            "path escapes sync directory: {}",
+            local_path.display()
+        )));
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -1549,10 +1627,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanitize_replaces_slashes() {
-        assert_eq!(sanitize_name("hello/world"), "hello_world");
-        assert_eq!(sanitize_name("no-slash"), "no-slash");
-        assert_eq!(sanitize_name(""), "");
+    fn sanitize_rejects_unsafe_names() {
+        assert_eq!(sanitize_name("no-slash").unwrap(), "no-slash");
+        assert!(sanitize_name("hello/world").is_err());
+        assert!(sanitize_name("").is_err());
+        assert!(sanitize_name(".").is_err());
+        assert!(sanitize_name("..").is_err());
+        assert!(sanitize_name("a\0b").is_err());
     }
 
     #[test]

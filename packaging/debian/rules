@@ -5,8 +5,11 @@
 
 override_dh_auto_build:
 	cargo build --release --workspace --exclude proton-gui
-	DEB_HOST_MULTIARCH=$(shell dpkg-architecture -qDEB_HOST_MULTIARCH) \
-	cargo build --release -p proton-gui
+	cargo build --release -p proton-gui --features tray
+
+override_dh_auto_clean:
+	dh_auto_clean
+	cargo clean || true
 
 override_dh_auto_install:
 	install -Dm755 target/release/protond          debian/proton-drive/usr/lib/proton-drive/protond

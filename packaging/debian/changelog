@@ -1,0 +1,11 @@
+proton-drive (0.1.0) unstable; urgency=medium
+
+  * Initial release.
+  * SRP-6a authentication with 2FA support.
+  * Two-way file synchronisation with Proton Drive.
+  * Unix socket IPC between protond, proton-drive CLI and proton-gui.
+  * System tray icon support (tray feature).
+  * Transfer scheduling and pause/resume.
+  * Conflict detection and resolution.
+
+ -- Proton AG <support@proton.me>  Fri, 27 Jun 2026 08:00:00 +0000

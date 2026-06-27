@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Proton Drive
 Comment=Proton Drive client for Linux
-Exec=/usr/lib/proton-drive/proton-gui
+Exec=proton-gui
 Icon=proton-drive
 Terminal=false
 Type=Application

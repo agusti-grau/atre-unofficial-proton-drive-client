@@ -298,7 +298,7 @@ async fn cmd_logout() -> Result<()> {
         Some(session) => {
             let username = session.username.clone();
             auth::logout(&session).await.context("Logout failed")?;
-            println!("{}", t!("status.logged_in", username = &username));
+            println!("{}", t!("status.logged_out", username = &username));
         }
     }
     Ok(())

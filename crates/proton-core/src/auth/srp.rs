@@ -18,7 +18,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use num_bigint::BigUint;
 use num_traits::Zero;
-use rand::RngCore;
 use sha2::{Digest, Sha512};
 
 use crate::{Error, Result};
@@ -62,9 +61,9 @@ pub fn generate_srp_proof(
 
     // Pad to SRP_LEN bytes (big-endian) — the canonical form used for both
     // transmission and hashing.
-    let n_padded = be_padded(&n, SRP_LEN);
-    let g_padded = be_padded(&g, SRP_LEN);
-    let b_padded = be_padded(&b, SRP_LEN);
+    let n_padded = be_padded(&n, SRP_LEN)?;
+    let g_padded = be_padded(&g, SRP_LEN)?;
+    let b_padded = be_padded(&b, SRP_LEN)?;
 
     // k = expand_hash(g_padded ‖ n_padded)
     let k = {
@@ -79,7 +78,7 @@ pub fn generate_srp_proof(
 
     // A = g^a mod N
     let big_a = g.modpow(&a, &n);
-    let a_padded = be_padded(&big_a, SRP_LEN);
+    let a_padded = be_padded(&big_a, SRP_LEN)?;
 
     // u = expand_hash(A_padded ‖ B_padded)
     let u = {
@@ -114,7 +113,7 @@ pub fn generate_srp_proof(
     let big_s = diff.modpow(&exp, &n);
 
     // K = expand_hash(S_padded)  — 256-byte session key
-    let big_k: [u8; 256] = expand_hash(&be_padded(&big_s, SRP_LEN));
+    let big_k: [u8; 256] = expand_hash(&be_padded(&big_s, SRP_LEN)?);
 
     // M1 = expand_hash(A_padded ‖ B_padded ‖ K)
     let m1: [u8; 256] = {
@@ -189,21 +188,25 @@ pub fn expand_hash(data: &[u8]) -> [u8; 256] {
 }
 
 /// Serialize `n` as big-endian bytes, left-zero-padded to exactly `len` bytes.
-pub fn be_padded(n: &BigUint, len: usize) -> Vec<u8> {
+///
+/// Returns an error if `n` does not fit in `len` bytes.
+pub fn be_padded(n: &BigUint, len: usize) -> crate::Result<Vec<u8>> {
     let raw = n.to_bytes_be();
-    if raw.len() >= len {
-        raw[raw.len() - len..].to_vec()
-    } else {
-        let mut out = vec![0u8; len - raw.len()];
-        out.extend_from_slice(&raw);
-        out
+    if raw.len() > len {
+        return Err(crate::Error::Srp(format!(
+            "value does not fit in {len} bytes"
+        )));
     }
+    let mut out = vec![0u8; len - raw.len()];
+    out.extend_from_slice(&raw);
+    Ok(out)
 }
 
 /// Generate a cryptographically random 256-bit (32-byte) BigUint.
 fn random_256bit() -> BigUint {
+    use rand::RngCore;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     BigUint::from_bytes_be(&bytes)
 }
 
@@ -255,23 +258,21 @@ mod tests {
     #[test]
     fn be_padded_pads_short_value() {
         let n = BigUint::from(2u32);
-        let padded = be_padded(&n, 4);
+        let padded = be_padded(&n, 4).unwrap();
         assert_eq!(padded, vec![0, 0, 0, 2]);
     }
 
     #[test]
     fn be_padded_exact_length_unchanged() {
         let n = BigUint::from(0x0102u32);
-        let padded = be_padded(&n, 2);
+        let padded = be_padded(&n, 2).unwrap();
         assert_eq!(padded, vec![1, 2]);
     }
 
     #[test]
-    fn be_padded_truncates_leading_zeros() {
-        // BigUint 256 = 0x0100, padded to 1 byte → 0x00
+    fn be_padded_rejects_overflow() {
         let n = BigUint::from(256u32);
-        let padded = be_padded(&n, 1);
-        assert_eq!(padded, vec![0]);
+        assert!(be_padded(&n, 1).is_err());
     }
 
     // ── SRP math: round-trip (S_client == S_server) ────────────────────────
@@ -353,12 +354,12 @@ mod tests {
         // Use p=167 which is a safe prime: 167 = 2*83+1
         let n = BigUint::from(167u64);
         let g = BigUint::from(2u64);
-        let modulus_bytes = be_padded(&n, 4); // 4 bytes for the tiny test prime
+        let modulus_bytes = be_padded(&n, 4).unwrap(); // 4 bytes for the tiny test prime
 
         // Fake B = g^b mod N for some b
         let b_val = BigUint::from(13u64);
         let big_b = g.modpow(&b_val, &n);
-        let b_padded = be_padded(&big_b, 4);
+        let b_padded = be_padded(&big_b, 4).unwrap();
         let server_ephemeral_b64 = base64::engine::general_purpose::STANDARD.encode(&b_padded);
 
         // Fake bcrypt output (just some bytes; x computation will still be deterministic)

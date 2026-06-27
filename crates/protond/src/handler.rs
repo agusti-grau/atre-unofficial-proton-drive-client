@@ -16,6 +16,42 @@ use proton_core::sync::{SyncEngine, SyncReport};
 use proton_core::transfer::{TransferConfig, TransferManager};
 use tokio::sync::Mutex;
 
+/// Validate that an upload source path is inside the configured sync directory
+/// and is not a symlink.
+async fn validate_upload_path(
+    base_path: &std::path::Path,
+    local_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    for component in local_path.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            _ => anyhow::bail!("path contains invalid component"),
+        }
+    }
+
+    let base = base_path
+        .canonicalize()
+        .unwrap_or_else(|_| base_path.to_path_buf());
+    let resolved = base
+        .join(local_path)
+        .canonicalize()
+        .unwrap_or_else(|_| base.join(local_path));
+
+    if !resolved.starts_with(&base) {
+        anyhow::bail!("path escapes sync directory");
+    }
+
+    if tokio::fs::symlink_metadata(&resolved)
+        .await
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("symlinks are not allowed");
+    }
+
+    Ok(())
+}
+
 /// Token bucket rate limiter — simple in-memory.
 struct TokenBucket {
     capacity: u32,
@@ -52,7 +88,7 @@ impl TokenBucket {
 pub struct IpcHandler {
     api: Mutex<Option<ApiClient>>,
     pending_login: Mutex<Option<ApiClient>>,
-    password_cache: Mutex<Option<String>>,
+    password_cache: Mutex<Option<zeroize::Zeroizing<String>>>,
     db: Arc<StateDb>,
     base_path: PathBuf,
     rate_limiter: Mutex<TokenBucket>,
@@ -183,7 +219,7 @@ impl IpcHandler {
 
         let password = { self.password_cache.lock().await.clone() };
         let password = match password {
-            Some(p) => p,
+            Some(p) => p.to_string(),
             None => {
                 tracing::warn!("background sync skipped: no password cached");
                 return;
@@ -723,7 +759,7 @@ impl IpcHandler {
         match result {
             Ok(report) => {
                 *self.last_report.lock().await = Some(report.clone());
-                *self.password_cache.lock().await = Some(password);
+                *self.password_cache.lock().await = Some(zeroize::Zeroizing::new(password));
                 let now = chrono::Utc::now().to_rfc3339();
                 let _ = self.db.set_meta("last_sync", &now);
                 let value = serde_json::to_value(&report).unwrap_or_default();
@@ -1067,6 +1103,13 @@ impl IpcHandler {
             Some(p) => p.to_string(),
             None => return IpcResponse::err(req.id, -1, "Missing required param: 'local_path'"),
         };
+
+        // Reject paths that escape the configured sync directory or point through symlinks.
+        let local_path_obj = std::path::Path::new(&local_path);
+        if let Err(e) = validate_upload_path(&self.base_path, local_path_obj).await {
+            return IpcResponse::err(req.id, -1, format!("invalid local_path: {e}"));
+        }
+
         let password = match req.params.get("password").and_then(|v| v.as_str()) {
             Some(p) => p.to_string(),
             None => return IpcResponse::err(req.id, -1, "Missing required param: 'password'"),

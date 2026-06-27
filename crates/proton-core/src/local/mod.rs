@@ -112,6 +112,8 @@ impl LocalClient {
     }
 
     /// Recursively walk a directory.
+    ///
+    /// Symlinks are skipped to prevent traversal outside the sync directory.
     async fn walk_recursive(&self, dir: &Path, nodes: &mut Vec<LocalNode>) -> Result<()> {
         let mut entries = fs::read_dir(dir)
             .await
@@ -125,6 +127,15 @@ impl LocalClient {
             ))
         })? {
             let path = entry.path();
+
+            // Skip symlinks to avoid path-traversal and loop hazards.
+            let meta = fs::symlink_metadata(&path)
+                .await
+                .map_err(|e| Error::Io(format!("metadata {}: {e}", path.display())))?;
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+
             let node = LocalNode::from_path(path.clone()).await?;
             let is_dir = !node.is_file;
             nodes.push(node);

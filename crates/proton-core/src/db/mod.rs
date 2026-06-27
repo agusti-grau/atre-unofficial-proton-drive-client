@@ -88,6 +88,12 @@ impl StateDb {
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::Io(format!("create db directory {}: {e}", dir.display())))?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+
         let path = dir.join("state.db");
         let conn = Connection::open(&path)
             .map_err(|e| Error::Db(format!("open {}: {e}", path.display())))?;
@@ -102,7 +108,7 @@ impl StateDb {
     /// Returns the default data directory for the database.
     pub fn default_dir() -> PathBuf {
         let base = dirs_data_home().unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/var/lib".to_string());
             PathBuf::from(home).join(".local/share")
         });
         base.join("proton-drive")

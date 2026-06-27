@@ -23,6 +23,9 @@ jobs:
             libdbus-1-dev \
             libssl-dev \
             libsecret-1-dev \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libappindicator3-dev \
             pkg-config
 
       - name: Install Rust toolchain
@@ -42,11 +45,23 @@ jobs:
       - name: Check workspace compiles
         run: cargo check --workspace
 
+      - name: Check tray feature compiles
+        run: cargo check -p proton-gui --features tray
+
       - name: Run tests
         run: cargo test --workspace
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Clippy with tray feature
+        run: cargo clippy -p proton-gui --features tray -- -D warnings
+
       - name: Check formatting
         run: cargo fmt --all --check
+
+      - name: Smoke-test packaging files
+        run: |
+          test -f packaging/debian/changelog
+          test -f packaging/debian/copyright
+          test -f packaging/com.proton.drive.metainfo.xml

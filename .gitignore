@@ -9,3 +9,10 @@ target/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Distribution packages
+*.deb
+*.AppImage
+*.flatpak
+*.tar.gz
+*.tar.xz

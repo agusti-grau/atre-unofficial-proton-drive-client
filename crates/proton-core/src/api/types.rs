@@ -125,10 +125,21 @@ pub struct KeySalt {
 // ── Stored session ────────────────────────────────────────────────────────
 
 /// Credentials stored in the system keyring after a successful login.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub uid: String,
     pub access_token: String,
     pub refresh_token: String,
     pub username: String,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("uid", &self.uid)
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("username", &self.username)
+            .finish()
+    }
 }
