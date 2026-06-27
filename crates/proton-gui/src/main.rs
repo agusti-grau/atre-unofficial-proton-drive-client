@@ -936,8 +936,20 @@ async fn parse_auth_status(status: serde_json::Value) -> Option<Result<Session, 
 
 fn spawn_daemon() {
     let socket = socket_path();
-    if std::path::Path::new(&socket).exists() {
+    let socket_path_obj = std::path::Path::new(&socket);
+
+    // If a daemon is already listening, nothing to do.
+    #[cfg(unix)]
+    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        tracing::info!("protond already listening on {socket}");
         return;
+    }
+
+    // No daemon is listening. Any existing socket file is stale, so remove it
+    // so the new daemon can bind.
+    if socket_path_obj.exists() {
+        tracing::info!("removing stale protond socket at {socket}");
+        let _ = std::fs::remove_file(socket_path_obj);
     }
 
     // Search in multiple locations: next to our binary, in PATH, and common build dirs.
@@ -984,17 +996,58 @@ fn spawn_daemon() {
         }
     }
 
+    // Log file for daemon startup output.
+    let log_path = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/share/proton-drive/protond.log"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/protond.log"));
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+
     for candidate in &candidates {
         if candidate.exists() {
             tracing::info!("starting protond from {:?}", candidate);
-            match std::process::Command::new(candidate)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                Ok(_) => {
-                    tracing::info!("protond spawned successfully");
-                    return;
+            let mut cmd = std::process::Command::new(candidate);
+            cmd.stdin(std::process::Stdio::null());
+            if let Some(file) = log_file.as_ref() {
+                let stdout = file.try_clone().ok().map(std::process::Stdio::from);
+                let stderr = file.try_clone().ok().map(std::process::Stdio::from);
+                if let (Some(out), Some(err)) = (stdout, stderr) {
+                    cmd.stdout(out).stderr(err);
+                } else {
+                    cmd.stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                }
+            } else {
+                cmd.stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+            }
+
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    // Give the daemon a moment to start; if it exits immediately,
+                    // something went wrong (e.g., single-instance lock held).
+                    std::thread::sleep(Duration::from_millis(300));
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            tracing::warn!(
+                                "protond from {:?} exited immediately with status {status}",
+                                candidate
+                            );
+                            continue;
+                        }
+                        Ok(None) => {
+                            tracing::info!("protond spawned successfully");
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to check protond status: {e}");
+                            // Assume it started; the retry loop will confirm.
+                            return;
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("failed to spawn protond from {:?}: {e}", candidate);
