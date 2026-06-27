@@ -1,6 +1,6 @@
 [Desktop Entry]
-Name=Proton Drive
-Comment=Proton Drive client for Linux
+Name=Proton Drive (Unofficial)
+Comment=Unofficial Proton Drive client for Linux — not affiliated with Proton AG
 Exec=proton-gui
 Icon=proton-drive
 Terminal=false

@@ -3,13 +3,18 @@
   <id>com.proton.drive</id>
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
-  <name>Proton Drive</name>
-  <summary>End-to-end encrypted cloud storage for Linux</summary>
+  <name>Proton Drive (Unofficial)</name>
+  <summary>Unofficial end-to-end encrypted cloud storage client for Linux</summary>
   <description>
     <p>
-      Proton Drive keeps your files synchronised between your computer and
-      Proton's encrypted servers. Files are encrypted before they leave your
-      device, so nobody but you can read them.
+      This is an unofficial, community-developed client for Proton Drive. It
+      keeps your files synchronised between your computer and Proton's
+      encrypted servers. Files are encrypted before they leave your device,
+      so nobody but you can read them.
+    </p>
+    <p>
+      This application is not affiliated with, endorsed by, or sponsored by
+      Proton AG. Proton Drive is a trademark of Proton AG.
     </p>
     <p>
       This package provides the sync daemon (protond), a command-line client
@@ -19,7 +24,7 @@
   <launchable type="desktop-id">com.proton.drive.desktop</launchable>
   <url type="homepage">https://github.com/agusti-grau/proton-drive-client</url>
   <url type="bugtracker">https://github.com/agusti-grau/proton-drive-client/issues</url>
-  <developer_name>Proton AG</developer_name>
+  <developer_name>agusti-grau</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
     <release version="0.1.0" date="2026-06-27">

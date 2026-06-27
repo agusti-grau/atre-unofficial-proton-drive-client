@@ -1,6 +1,6 @@
 [Unit]
-Description=Proton Drive sync daemon
-Documentation=https://github.com/ProtonMail/proton-drive-client
+Description=Unofficial Proton Drive sync daemon
+Documentation=https://github.com/agusti-grau/proton-drive-client
 After=network-online.target
 Wants=network-online.target
 

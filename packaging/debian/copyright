@@ -1,10 +1,10 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: proton-drive
-Upstream-Contact: Proton AG <support@proton.me>
+Upstream-Contact: agusti-grau
 Source: https://github.com/agusti-grau/proton-drive-client
 
 Files: *
-Copyright: 2026 Proton AG
+Copyright: 2026 agusti-grau
 License: MIT
 
 License: MIT

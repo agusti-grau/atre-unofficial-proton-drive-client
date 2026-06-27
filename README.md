@@ -2,6 +2,10 @@
 
 A native CLI, GUI, and background daemon for Linux that provides two-way synchronisation with [Proton Drive](https://proton.me/drive). Built in Rust.
 
+> **Disclaimer:** This is an **unofficial, community-developed client**. It is not
+> affiliated with, endorsed by, or sponsored by **Proton AG**. Proton Drive is a
+> trademark of Proton AG.
+
 > **Status: Feature-complete — authentication, PGP key chain, two-way sync, daemon IPC, GUI, inotify watching, conflict resolution, bandwidth throttle, transfer scheduling, pause/resume, packaging, and i18n are working.**
 
 ---

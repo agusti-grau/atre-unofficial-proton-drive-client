@@ -1,14 +1,17 @@
-.TH PROTOND 1 "2026-06-06" "0.1.0" "Proton Drive"
+.TH PROTOND 1 "2026-06-06" "0.1.0" "Proton Drive (Unofficial)"
 .SH NAME
-protond \- Proton Drive sync daemon
+protond \- Unofficial Proton Drive sync daemon
 .SH SYNOPSIS
 .B protond
 .SH DESCRIPTION
+This is an unofficial, community-developed sync daemon for Proton Drive. It is
+not affiliated with, endorsed by, or sponsored by Proton AG. Proton Drive is a
+trademark of Proton AG.
+.PP
 .B protond
-is the background sync daemon for Proton Drive. It runs as a user service,
-watches the local sync directory for changes, periodically synchronizes
-with the remote server, respects transfer schedules and manual pause/resume,
-and handles IPC requests from the CLI and GUI.
+runs as a user service, watches the local sync directory for changes,
+periodically synchronizes with the remote server, respects transfer schedules
+and manual pause/resume, and handles IPC requests from the CLI and GUI.
 .SH USAGE
 protond is typically started automatically by the GUI or via systemd:
 .nf

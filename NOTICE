@@ -1,0 +1,34 @@
+proton-drive-client
+
+Copyright (c) 2026 agusti-grau
+
+Licensed under the MIT License. See the LICENSE file for the full license text.
+
+---
+
+DISCLAIMER
+
+This is an unofficial, community-developed client for Proton Drive. It is not
+affiliated with, endorsed by, or sponsored by Proton AG (Switzerland).
+
+"Proton", "Proton Drive", "ProtonMail", and related marks are trademarks of
+Proton AG. All trademarks, service marks, and trade names used in this project
+that belong to Proton AG are the property of Proton AG.
+
+This project uses Proton's public API endpoints and protocol documentation
+solely to provide interoperability with Proton Drive services. Use of Proton's
+API is subject to Proton AG's Terms of Service and Acceptable Use Policy.
+
+---
+
+THIRD-PARTY ACKNOWLEDGEMENTS
+
+This project implements Proton's SRP-6a authentication protocol based on the
+publicly documented behaviour of the ProtonMail go-srp library and the
+proton-python-client constants.py file. No source code from those projects is
+copied directly; this is an independent Rust implementation. References are
+provided in the source comments.
+
+The embedded Proton SRP modulus verification public key was obtained from
+https://github.com/ProtonMail/proton-python-client (constants.py). Its
+fingerprint is documented in the source code.
