@@ -23,6 +23,18 @@
 //!
 //! → {"id":6, "method":"drive.status", "params":{}}
 //! ← {"id":6, "result":{"logged_in":true,"username":"user@pm.me","db":{"total_nodes":42,"synced":40,"pending":2},"last_sync":"2024-01-15T10:30:00Z"}}
+//!
+//! → {"id":7, "method":"drive.delete", "params":{"share_id":"...","link_id":"..."}}
+//! ← {"id":7, "result":{"status":"deleted"}}
+//!
+//! → {"id":8, "method":"drive.rename", "params":{"share_id":"...","link_id":"...","new_name":"NewName","password":"..."}}
+//! ← {"id":8, "result":{"status":"renamed"}}
+//!
+//! → {"id":9, "method":"drive.create_folder", "params":{"share_id":"...","parent_link_id":"...","folder_name":"NewFolder","password":"..."}}
+//! ← {"id":9, "result":{"status":"created","link_id":"..."}}
+//!
+//! → {"id":10, "method":"drive.upload_file", "params":{"share_id":"...","parent_link_id":"...","local_path":"/path/to/file","password":"..."}}
+//! ← {"id":10, "result":{"status":"uploaded","link_id":"..."}}
 //! ```
 
 use serde::{Deserialize, Serialize};

@@ -533,6 +533,17 @@ pub struct BlockUploadUrl {
     pub url: String,
 }
 
+// ── Rename link request ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RenameLinkReq {
+    /// PGP-armored encrypted name (encrypted with parent key).
+    pub name: String,
+    /// Address used for the signature.
+    pub signature_address: String,
+}
+
 // ── Revision-state request (complete / activate) ───────────────────────────
 
 #[derive(Debug, Serialize)]

@@ -14,13 +14,13 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::ApiClient;
 use crate::api::drive_types::{BlockEntry, CreateFileReq, CreateFolderReq, CreateRevisionReq};
 use crate::api::types::AddressKey;
+use crate::api::ApiClient;
 use crate::crypto::{
-    compute_name_hash, decrypt_block, decrypt_session_key, encrypt_block,
-    generate_hash_key, generate_node_keypair, generate_session_key, pgp_decrypt,
-    pgp_encrypt, pgp_sign, create_content_key_packet,
+    compute_name_hash, create_content_key_packet, decrypt_block, decrypt_session_key,
+    encrypt_block, generate_hash_key, generate_node_keypair, generate_session_key, pgp_decrypt,
+    pgp_encrypt, pgp_sign,
 };
 use crate::db::{JobFields, NodeFields, StateDb};
 use crate::drive::keyring::{derive_key_password, DriveKeyring};
@@ -124,7 +124,8 @@ impl SyncEngine {
             .collect();
 
         // Build a link_id → entry index lookup.
-        let mut by_link: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_link: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for (i, e) in entries.iter().enumerate() {
             by_link.insert(e.node.link_id.clone(), i);
         }
@@ -138,7 +139,9 @@ impl SyncEngine {
             let mut pid = entries[i].node.parent_link_id.clone();
             while let Some(id) = pid {
                 depth += 1;
-                pid = by_link.get(&id).and_then(|&idx| entries[idx].node.parent_link_id.clone());
+                pid = by_link
+                    .get(&id)
+                    .and_then(|&idx| entries[idx].node.parent_link_id.clone());
                 if depth > 1000 {
                     break;
                 }
@@ -174,22 +177,26 @@ impl SyncEngine {
             let full = self.base_path.join(&e.local_path);
             if !full.exists() {
                 if let Err(err) = std::fs::create_dir_all(&full) {
-                    report.errors.push(format!("create dir {}: {err}", full.display()));
+                    report
+                        .errors
+                        .push(format!("create dir {}: {err}", full.display()));
                     continue;
                 }
                 report.dirs_created += 1;
             }
-            self.db.upsert_node(&NodeFields {
-                local_path: e.local_path.clone(),
-                link_id: Some(e.node.link_id.clone()),
-                share_id: Some(e.node.share_id.clone()),
-                name_encrypted: e.node.encrypted_name.clone(),
-                size: 0,
-                modified_time: 0,
-                hash: None,
-                is_file: false,
-                state: "synced".into(),
-            }).ok();
+            self.db
+                .upsert_node(&NodeFields {
+                    local_path: e.local_path.clone(),
+                    link_id: Some(e.node.link_id.clone()),
+                    share_id: Some(e.node.share_id.clone()),
+                    name_encrypted: e.node.encrypted_name.clone(),
+                    size: 0,
+                    modified_time: 0,
+                    hash: None,
+                    is_file: false,
+                    state: "synced".into(),
+                })
+                .ok();
         }
 
         // Build path → (node, name) map for upload parent lookup.
@@ -205,11 +212,7 @@ impl SyncEngine {
                 continue;
             }
 
-            let exists = self
-                .db
-                .get_node_by_link_id(&e.node.link_id)
-                .ok()
-                .flatten();
+            let exists = self.db.get_node_by_link_id(&e.node.link_id).ok().flatten();
 
             let remote_changed = match &exists {
                 None => true,
@@ -224,18 +227,17 @@ impl SyncEngine {
             // Remote changed — check if local also changed (conflict).
             let local_path = self.base_path.join(&e.local_path);
             let local_changed = match (&exists, local_path.exists()) {
-                (Some(row), true) => {
-                    match LocalNode::from_path(local_path).await {
-                        Ok(local) => {
-                            let local_mtime = local.modified_time
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs() as i64;
-                            local.size as i64 != row.size || local_mtime != row.modified_time
-                        }
-                        Err(_) => false,
+                (Some(row), true) => match LocalNode::from_path(local_path).await {
+                    Ok(local) => {
+                        let local_mtime = local
+                            .modified_time
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        local.size as i64 != row.size || local_mtime != row.modified_time
                     }
-                }
+                    Err(_) => false,
+                },
                 _ => false,
             };
 
@@ -245,7 +247,27 @@ impl SyncEngine {
                     "CONFLICT: {} changed both locally and remotely",
                     e.local_path.display()
                 ));
-                self.db.upsert_node(&NodeFields {
+                self.db
+                    .upsert_node(&NodeFields {
+                        local_path: e.local_path.clone(),
+                        link_id: Some(e.node.link_id.clone()),
+                        share_id: Some(e.node.share_id.clone()),
+                        name_encrypted: e.node.encrypted_name.clone(),
+                        size: e.node.size,
+                        modified_time: e.node.modify_time,
+                        hash: None,
+                        is_file: true,
+                        state: "conflict".into(),
+                    })
+                    .ok();
+                continue;
+            }
+
+            report.downloads_attempted += 1;
+
+            // Persist pending state.
+            self.db
+                .upsert_node(&NodeFields {
                     local_path: e.local_path.clone(),
                     link_id: Some(e.node.link_id.clone()),
                     share_id: Some(e.node.share_id.clone()),
@@ -254,41 +276,32 @@ impl SyncEngine {
                     modified_time: e.node.modify_time,
                     hash: None,
                     is_file: true,
-                    state: "conflict".into(),
-                }).ok();
-                continue;
-            }
+                    state: "pending".into(),
+                })
+                .ok();
 
-            report.downloads_attempted += 1;
-
-            // Persist pending state.
-            self.db.upsert_node(&NodeFields {
-                local_path: e.local_path.clone(),
-                link_id: Some(e.node.link_id.clone()),
-                share_id: Some(e.node.share_id.clone()),
-                name_encrypted: e.node.encrypted_name.clone(),
-                size: e.node.size,
-                modified_time: e.node.modify_time,
-                hash: None,
-                is_file: true,
-                state: "pending".into(),
-            }).ok();
-
-            self.db.enqueue_job(&JobFields {
-                job_type: "download".into(),
-                local_path: e.local_path.clone(),
-                link_id: Some(e.node.link_id.clone()),
-            }).ok();
+            self.db
+                .enqueue_job(&JobFields {
+                    job_type: "download".into(),
+                    local_path: e.local_path.clone(),
+                    link_id: Some(e.node.link_id.clone()),
+                })
+                .ok();
 
             // Attempt the download inline for the MVP.
             match self.download_file(&e.node, &e.local_path, &kr).await {
                 Ok(()) => report.downloads_succeeded += 1,
-                Err(err) => report.errors.push(format!("download {}: {err}", e.node.link_id)),
+                Err(err) => report
+                    .errors
+                    .push(format!("download {}: {err}", e.node.link_id)),
             }
         }
 
         // ── 5. Upload new/changed local files ──────────────────────────────
-        let share_id = entries.first().map(|e| e.node.share_id.clone()).unwrap_or_default();
+        let share_id = entries
+            .first()
+            .map(|e| e.node.share_id.clone())
+            .unwrap_or_default();
         let addr_ref = address_key_info.as_ref().map(|(k, p)| (k, p.as_slice()));
 
         // Ensure remote folders exist for local-only directories.
@@ -310,11 +323,20 @@ impl SyncEngine {
         )
         .await;
 
-        self.upload_new_files(&mut report, &share_id, &kr, &remote_by_path, addr_ref, &signature_address)
-            .await;
+        self.upload_new_files(
+            &mut report,
+            &share_id,
+            &kr,
+            &remote_by_path,
+            addr_ref,
+            &signature_address,
+        )
+        .await;
 
         // Persist last sync timestamp.
-        self.db.set_meta("last_sync", &Self::chrono_now_rfc3339()).ok();
+        self.db
+            .set_meta("last_sync", &Self::chrono_now_rfc3339())
+            .ok();
 
         Ok(report)
     }
@@ -378,12 +400,13 @@ impl SyncEngine {
         };
 
         // Get the node's unlocked private key from the keyring.
-        let (node_armored_key, node_passphrase) = kr.get_key(&node.link_id).ok_or_else(|| {
-            Error::Crypto(format!("node key not in keyring: {}", node.link_id))
-        })?;
+        let (node_armored_key, node_passphrase) = kr
+            .get_key(&node.link_id)
+            .ok_or_else(|| Error::Crypto(format!("node key not in keyring: {}", node.link_id)))?;
 
         // Decrypt the content key packet → 32-byte session key.
-        let session_key = decrypt_session_key(&content_key_packet, node_armored_key, node_passphrase)?;
+        let session_key =
+            decrypt_session_key(&content_key_packet, node_armored_key, node_passphrase)?;
 
         let revision = self
             .api
@@ -492,16 +515,17 @@ impl SyncEngine {
             let parent_node = if parent_path.as_os_str().is_empty() {
                 // Root folder — parent is the top-level remote folder.
                 // This shouldn't normally happen but handle gracefully.
-                report.errors.push(format!("cannot create root folder remotely"));
+                report
+                    .errors
+                    .push(format!("cannot create root folder remotely"));
                 continue;
             } else {
                 match remote_by_path.get(&parent_path) {
                     Some((pn, _)) => pn.clone(),
                     None => {
-                        report.errors.push(format!(
-                            "parent not found for dir {}",
-                            rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("parent not found for dir {}", rel.display()));
                         continue;
                     }
                 }
@@ -511,7 +535,9 @@ impl SyncEngine {
             let (node_key, node_pass) = match generate_node_keypair() {
                 Ok(pair) => pair,
                 Err(e) => {
-                    report.errors.push(format!("generate key for dir {}: {e}", rel.display()));
+                    report
+                        .errors
+                        .push(format!("generate key for dir {}: {e}", rel.display()));
                     continue;
                 }
             };
@@ -520,33 +546,33 @@ impl SyncEngine {
             let enc_name = match kr.encrypt_name_raw(dir_name, &parent_node.link_id) {
                 Ok(n) => n,
                 Err(e) => {
-                    report.errors.push(format!("encrypt name for dir {}: {e}", rel.display()));
+                    report
+                        .errors
+                        .push(format!("encrypt name for dir {}: {e}", rel.display()));
                     continue;
                 }
             };
 
             // Encrypt passphrase with parent's key.
-            let enc_pass = match pgp_encrypt(
-                hex::encode(&node_pass).as_bytes(),
-                &parent_node.node_key,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    report
-                        .errors
-                        .push(format!("encrypt passphrase for dir {}: {e}", rel.display()));
-                    continue;
-                }
-            };
+            let enc_pass =
+                match pgp_encrypt(hex::encode(&node_pass).as_bytes(), &parent_node.node_key) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        report
+                            .errors
+                            .push(format!("encrypt passphrase for dir {}: {e}", rel.display()));
+                        continue;
+                    }
+                };
 
             // Sign passphrase with address key.
             let (pass_sig, sig_addr) = if let Some((addr_key, addr_pass)) = address_key {
                 match pgp_sign(enc_pass.as_bytes(), &addr_key.private_key, addr_pass) {
                     Ok(sig) => (sig, signature_address.to_string()),
                     Err(e) => {
-                        report.errors.push(format!(
-                            "sign passphrase for dir {}: {e}", rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("sign passphrase for dir {}: {e}", rel.display()));
                         continue;
                     }
                 }
@@ -567,34 +593,30 @@ impl SyncEngine {
                 let (parent_key, parent_pass) = match kr.get_key(&parent_node.link_id) {
                     Some(k) => k,
                     None => {
-                        report.errors.push(format!(
-                            "parent key not found for {}",
-                            rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("parent key not found for {}", rel.display()));
                         continue;
                     }
                 };
-                let parent_hash_key = match pgp_decrypt(
-                    &parent_node.node_hash_key,
-                    parent_key,
-                    parent_pass,
-                ) {
-                    Ok(k) => k,
-                    Err(e) => {
-                        report.errors.push(format!(
-                            "decrypt hash key for dir {}: {e}", rel.display()
-                        ));
-                        continue;
-                    }
-                };
+                let parent_hash_key =
+                    match pgp_decrypt(&parent_node.node_hash_key, parent_key, parent_pass) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            report
+                                .errors
+                                .push(format!("decrypt hash key for dir {}: {e}", rel.display()));
+                            continue;
+                        }
+                    };
 
                 name_hash = compute_name_hash(&parent_hash_key, dir_name);
                 enc_hash_key = match pgp_encrypt(&hash_key, &node_key) {
                     Ok(k) => k,
                     Err(e) => {
-                        report.errors.push(format!(
-                            "encrypt hash key for dir {}: {e}", rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("encrypt hash key for dir {}: {e}", rel.display()));
                         continue;
                     }
                 };
@@ -630,8 +652,7 @@ impl SyncEngine {
                         node_passphrase: req.node_passphrase,
                         node_hash_key: req.node_hash_key,
                     };
-                    remote_by_path
-                        .insert(rel.clone(), (new_node, dir_name.clone()));
+                    remote_by_path.insert(rel.clone(), (new_node, dir_name.clone()));
                     report.dirs_created += 1;
                 }
                 Err(e) => {
@@ -693,10 +714,9 @@ impl SyncEngine {
             };
 
             if !parent_node.is_folder() {
-                report.errors.push(format!(
-                    "parent {} is not a folder",
-                    parent_path.display()
-                ));
+                report
+                    .errors
+                    .push(format!("parent {} is not a folder", parent_path.display()));
                 continue;
             }
 
@@ -771,30 +791,24 @@ impl SyncEngine {
                         continue;
                     }
                 };
-                let node_passphrase = match pgp_decrypt(
-                    &existing_node.node_passphrase,
-                    parent_key,
-                    parent_pass,
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        report.errors.push(format!(
-                            "decrypt passphrase for modified {}: {e}",
-                            rel.display()
-                        ));
-                        continue;
-                    }
-                };
+                let node_passphrase =
+                    match pgp_decrypt(&existing_node.node_passphrase, parent_key, parent_pass) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            report.errors.push(format!(
+                                "decrypt passphrase for modified {}: {e}",
+                                rel.display()
+                            ));
+                            continue;
+                        }
+                    };
                 let node_key = &existing_node.node_key;
 
                 let encrypted_name = row.name_encrypted.clone();
 
                 // ── Upload blocks ─────────────────────────────────────────
                 let session_key = generate_session_key();
-                let content_key_packet = match create_content_key_packet(
-                    &session_key,
-                    node_key,
-                ) {
+                let content_key_packet = match create_content_key_packet(&session_key, node_key) {
                     Ok(p) => p,
                     Err(e) => {
                         report.errors.push(format!(
@@ -805,32 +819,30 @@ impl SyncEngine {
                     }
                 };
 
-                let content_key_sig = match pgp_sign(
-                    content_key_packet.as_bytes(),
-                    node_key,
-                    &node_passphrase,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        report.errors.push(format!(
-                            "sign content key for modified {}: {e}", rel.display()
-                        ));
-                        continue;
-                    }
-                };
+                let content_key_sig =
+                    match pgp_sign(content_key_packet.as_bytes(), node_key, &node_passphrase) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            report.errors.push(format!(
+                                "sign content key for modified {}: {e}",
+                                rel.display()
+                            ));
+                            continue;
+                        }
+                    };
 
                 let x_attr = serde_json::json!({
                     "contentKeyPacket": content_key_packet,
                     "contentKeyPacketSignature": content_key_sig,
-                }).to_string();
+                })
+                .to_string();
 
                 let file_bytes = match tokio::fs::read(&local_node.path).await {
                     Ok(b) => b,
                     Err(e) => {
-                        report.errors.push(format!(
-                            "read modified {}: {e}",
-                            rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("read modified {}: {e}", rel.display()));
                         continue;
                     }
                 };
@@ -875,12 +887,20 @@ impl SyncEngine {
                     continue;
                 }
 
-                let rev = match self.api.create_revision(share_id, &link_id, &CreateRevisionReq {
-                    block_list: block_entries,
-                    manifest_signature: String::new(),
-                    signature_address: String::new(),
-                    x_attr,
-                }).await {
+                let rev = match self
+                    .api
+                    .create_revision(
+                        share_id,
+                        &link_id,
+                        &CreateRevisionReq {
+                            block_list: block_entries,
+                            manifest_signature: String::new(),
+                            signature_address: String::new(),
+                            x_attr,
+                        },
+                    )
+                    .await
+                {
                     Ok(r) => r,
                     Err(e) => {
                         report.errors.push(format!(
@@ -920,15 +940,18 @@ impl SyncEngine {
                     self.upload_throttle.acquire(chunk_total).await;
 
                     if let Err(e) = futures::future::try_join_all(upload_futures).await {
-                        report.errors.push(format!(
-                            "upload blocks for modified {}: {e}",
-                            rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("upload blocks for modified {}: {e}", rel.display()));
                         continue;
                     }
                 }
 
-                if let Err(e) = self.api.complete_revision(share_id, &link_id, &rev.id).await {
+                if let Err(e) = self
+                    .api
+                    .complete_revision(share_id, &link_id, &rev.id)
+                    .await
+                {
                     report.errors.push(format!(
                         "complete revision for modified {}: {e}",
                         rel.display()
@@ -938,21 +961,23 @@ impl SyncEngine {
 
                 report.uploads_succeeded += 1;
 
-                self.db.upsert_node(&NodeFields {
-                    local_path: rel.clone(),
-                    link_id: Some(link_id),
-                    share_id: Some(share_id.to_string()),
-                    name_encrypted: encrypted_name,
-                    size: local_node.size as i64,
-                    modified_time: local_node
-                        .modified_time
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
-                    hash: local_node.hash.clone(),
-                    is_file: true,
-                    state: "synced".into(),
-                }).ok();
+                self.db
+                    .upsert_node(&NodeFields {
+                        local_path: rel.clone(),
+                        link_id: Some(link_id),
+                        share_id: Some(share_id.to_string()),
+                        name_encrypted: encrypted_name,
+                        size: local_node.size as i64,
+                        modified_time: local_node
+                            .modified_time
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64,
+                        hash: local_node.hash.clone(),
+                        is_file: true,
+                        state: "synced".into(),
+                    })
+                    .ok();
 
                 continue; // skip the new-file path below
             }
@@ -963,7 +988,9 @@ impl SyncEngine {
             let (node_key_armored, node_passphrase) = match generate_node_keypair() {
                 Ok(pair) => pair,
                 Err(e) => {
-                    report.errors.push(format!("generate key for {}: {e}", rel.display()));
+                    report
+                        .errors
+                        .push(format!("generate key for {}: {e}", rel.display()));
                     continue;
                 }
             };
@@ -971,13 +998,16 @@ impl SyncEngine {
             let encrypted_name = match kr.encrypt_name_raw(&file_name, &parent_node.link_id) {
                 Ok(n) => n,
                 Err(e) => {
-                    report.errors.push(format!("encrypt name for {}: {e}", rel.display()));
+                    report
+                        .errors
+                        .push(format!("encrypt name for {}: {e}", rel.display()));
                     continue;
                 }
             };
 
             let pass_str = hex::encode(&node_passphrase);
-            let encrypted_passphrase = match pgp_encrypt(pass_str.as_bytes(), &parent_node.node_key) {
+            let encrypted_passphrase = match pgp_encrypt(pass_str.as_bytes(), &parent_node.node_key)
+            {
                 Ok(p) => p,
                 Err(e) => {
                     report
@@ -995,9 +1025,9 @@ impl SyncEngine {
                 ) {
                     Ok(sig) => (sig, signature_address.to_string()),
                     Err(e) => {
-                        report.errors.push(format!(
-                            "sign passphrase for {}: {e}", rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("sign passphrase for {}: {e}", rel.display()));
                         continue;
                     }
                 }
@@ -1016,34 +1046,30 @@ impl SyncEngine {
                 let (parent_key, parent_pass) = match kr.get_key(&parent_node.link_id) {
                     Some(k) => k,
                     None => {
-                        report.errors.push(format!(
-                            "parent key not found for {}",
-                            rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("parent key not found for {}", rel.display()));
                         continue;
                     }
                 };
-                let parent_hash_key = match pgp_decrypt(
-                    &parent_node.node_hash_key,
-                    parent_key,
-                    parent_pass,
-                ) {
-                    Ok(k) => k,
-                    Err(e) => {
-                        report.errors.push(format!(
-                            "decrypt hash key for {}: {e}", rel.display()
-                        ));
-                        continue;
-                    }
-                };
+                let parent_hash_key =
+                    match pgp_decrypt(&parent_node.node_hash_key, parent_key, parent_pass) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            report
+                                .errors
+                                .push(format!("decrypt hash key for {}: {e}", rel.display()));
+                            continue;
+                        }
+                    };
 
                 name_hash = compute_name_hash(&parent_hash_key, &file_name);
                 enc_hash_key = match pgp_encrypt(&hash_key, &node_key_armored) {
                     Ok(k) => k,
                     Err(e) => {
-                        report.errors.push(format!(
-                            "encrypt hash key for {}: {e}", rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("encrypt hash key for {}: {e}", rel.display()));
                         continue;
                     }
                 };
@@ -1066,25 +1092,25 @@ impl SyncEngine {
             let link_id = match self.api.create_link(share_id, &req).await {
                 Ok(id) => id,
                 Err(e) => {
-                    report.errors.push(format!("create link for {}: {e}", rel.display()));
+                    report
+                        .errors
+                        .push(format!("create link for {}: {e}", rel.display()));
                     continue;
                 }
             };
 
             // ── Upload blocks ─────────────────────────────────────────────
             let session_key = generate_session_key();
-            let content_key_packet = match create_content_key_packet(
-                &session_key,
-                &node_key_for_content,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    report
-                        .errors
-                        .push(format!("content key packet for {}: {e}", rel.display()));
-                    continue;
-                }
-            };
+            let content_key_packet =
+                match create_content_key_packet(&session_key, &node_key_for_content) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        report
+                            .errors
+                            .push(format!("content key packet for {}: {e}", rel.display()));
+                        continue;
+                    }
+                };
 
             let content_key_sig = match pgp_sign(
                 content_key_packet.as_bytes(),
@@ -1093,9 +1119,9 @@ impl SyncEngine {
             ) {
                 Ok(s) => s,
                 Err(e) => {
-                    report.errors.push(format!(
-                        "sign content key for {}: {e}", rel.display()
-                    ));
+                    report
+                        .errors
+                        .push(format!("sign content key for {}: {e}", rel.display()));
                     continue;
                 }
             };
@@ -1103,14 +1129,13 @@ impl SyncEngine {
             let x_attr = serde_json::json!({
                 "contentKeyPacket": content_key_packet,
                 "contentKeyPacketSignature": content_key_sig,
-            }).to_string();
+            })
+            .to_string();
 
             let file_bytes = match tokio::fs::read(&local_node.path).await {
                 Ok(b) => b,
                 Err(e) => {
-                    report
-                        .errors
-                        .push(format!("read {}: {e}", rel.display()));
+                    report.errors.push(format!("read {}: {e}", rel.display()));
                     continue;
                 }
             };
@@ -1128,10 +1153,9 @@ impl SyncEngine {
                 let enc = match encrypt_block(chunk, &session_key, index) {
                     Ok(b) => b,
                     Err(e) => {
-                        report.errors.push(format!(
-                            "encrypt block {index} for {}: {e}",
-                            rel.display()
-                        ));
+                        report
+                            .errors
+                            .push(format!("encrypt block {index} for {}: {e}", rel.display()));
                         break;
                     }
                 };
@@ -1155,15 +1179,25 @@ impl SyncEngine {
                 continue;
             }
 
-            let rev = match self.api.create_revision(share_id, &link_id, &CreateRevisionReq {
-                block_list: block_entries,
-                manifest_signature: String::new(),
-                signature_address: String::new(),
-                x_attr,
-            }).await {
+            let rev = match self
+                .api
+                .create_revision(
+                    share_id,
+                    &link_id,
+                    &CreateRevisionReq {
+                        block_list: block_entries,
+                        manifest_signature: String::new(),
+                        signature_address: String::new(),
+                        x_attr,
+                    },
+                )
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
-                    report.errors.push(format!("create revision for {}: {e}", rel.display()));
+                    report
+                        .errors
+                        .push(format!("create revision for {}: {e}", rel.display()));
                     continue;
                 }
             };
@@ -1197,15 +1231,18 @@ impl SyncEngine {
                 self.upload_throttle.acquire(chunk_total).await;
 
                 if let Err(e) = futures::future::try_join_all(upload_futures).await {
-                    report.errors.push(format!(
-                        "upload blocks for {}: {e}",
-                        rel.display()
-                    ));
+                    report
+                        .errors
+                        .push(format!("upload blocks for {}: {e}", rel.display()));
                     continue;
                 }
             }
 
-            if let Err(e) = self.api.complete_revision(share_id, &link_id, &rev.id).await {
+            if let Err(e) = self
+                .api
+                .complete_revision(share_id, &link_id, &rev.id)
+                .await
+            {
                 report
                     .errors
                     .push(format!("complete revision for {}: {e}", rel.display()));
@@ -1214,22 +1251,220 @@ impl SyncEngine {
 
             report.uploads_succeeded += 1;
 
-            self.db.upsert_node(&NodeFields {
-                local_path: rel,
-                link_id: Some(link_id),
-                share_id: Some(share_id.to_string()),
-                name_encrypted: encrypted_name,
-                size: local_node.size as i64,
-                modified_time: local_node
-                    .modified_time
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
-                hash: local_node.hash.clone(),
-                is_file: true,
-                state: "synced".into(),
-            }).ok();
+            self.db
+                .upsert_node(&NodeFields {
+                    local_path: rel,
+                    link_id: Some(link_id),
+                    share_id: Some(share_id.to_string()),
+                    name_encrypted: encrypted_name,
+                    size: local_node.size as i64,
+                    modified_time: local_node
+                        .modified_time
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                    hash: local_node.hash.clone(),
+                    is_file: true,
+                    state: "synced".into(),
+                })
+                .ok();
         }
+    }
+
+    /// Upload a single file to Proton Drive.
+    ///
+    /// Reads the file at `local_path`, encrypts it with a fresh session key,
+    /// creates a remote link under `parent_link_id` within `share_id`, uploads
+    /// the encrypted blocks, and marks the revision as active.
+    ///
+    /// # Returns
+    /// The `link_id` of the newly created remote file on success.
+    pub async fn upload_file(
+        &mut self,
+        share_id: &str,
+        parent_link_id: &str,
+        local_path: &Path,
+        kr: &DriveKeyring,
+        password: &str,
+    ) -> Result<String> {
+        // ── Fetch address key info for upload signing ──────────────────────
+        let session = self
+            .api
+            .session()
+            .ok_or_else(|| Error::Auth("no session".into()))?;
+        let drive = DriveClient::new(ApiClient::new()?.with_session(session));
+        let (address_key_info, signature_address) = self
+            .fetch_address_key(&drive, password)
+            .await
+            .unwrap_or((None, String::new()));
+
+        // ── Fetch parent link for its key material ─────────────────────────
+        let parent_link = self.api.get_link(share_id, parent_link_id).await?;
+        let parent_node_key = parent_link.node_key;
+        let parent_hash_key_armored = parent_link
+            .folder_properties
+            .as_ref()
+            .map(|p| p.node_hash_key.clone())
+            .unwrap_or_default();
+
+        // ── Derive file name and size from the local path ──────────────────
+        let file_name = local_path
+            .file_name()
+            .ok_or_else(|| Error::Io("cannot extract file name from path".into()))?
+            .to_string_lossy()
+            .to_string();
+
+        let file_meta = tokio::fs::metadata(local_path).await.map_err(|e| Error::Io(e.to_string()))?;
+        let file_size = file_meta.len() as i64;
+
+        // ── Generate node keypair for the new file ─────────────────────────
+        let (node_key_armored, node_passphrase) = generate_node_keypair()?;
+
+        // ── Encrypt the file name with the parent's key ────────────────────
+        let encrypted_name = kr.encrypt_name_raw(&file_name, parent_link_id)?;
+
+        // ── Encrypt the node passphrase with the parent's node key ─────────
+        let pass_str = hex::encode(&node_passphrase);
+        let encrypted_passphrase = pgp_encrypt(pass_str.as_bytes(), &parent_node_key)?;
+
+        // ── Sign the encrypted passphrase with the address key ─────────────
+        let (pass_sig, sig_addr) = if let Some((addr_key, addr_pass)) = &address_key_info {
+            let sig = pgp_sign(
+                encrypted_passphrase.as_bytes(),
+                &addr_key.private_key,
+                addr_pass,
+            )?;
+            (sig, signature_address.clone())
+        } else {
+            (String::new(), signature_address.clone())
+        };
+
+        // ── Compute name hash and hash key ─────────────────────────────────
+        let (name_hash, enc_hash_key) = if parent_hash_key_armored.is_empty() {
+            (String::new(), String::new())
+        } else {
+            let (parent_key, parent_pass) = kr
+                .get_key(parent_link_id)
+                .ok_or_else(|| Error::Crypto("parent key not found in keyring".into()))?;
+            let parent_hash_key = pgp_decrypt(&parent_hash_key_armored, parent_key, parent_pass)?;
+            let hash_key = generate_hash_key();
+            let name_hash = compute_name_hash(&parent_hash_key, &file_name);
+            let enc_hash_key = pgp_encrypt(&hash_key, &node_key_armored)?;
+            (name_hash, enc_hash_key)
+        };
+
+        // ── Create the remote file link ────────────────────────────────────
+        let create_req = CreateFileReq {
+            parent_link_id: parent_link_id.to_string(),
+            node_hash_key: enc_hash_key,
+            name: encrypted_name.clone(),
+            hash: name_hash,
+            node_key: node_key_armored.clone(),
+            node_passphrase: encrypted_passphrase,
+            node_passphrase_signature: pass_sig,
+            signature_address: sig_addr,
+            mime_type: guess_mime(&file_name),
+            size: file_size,
+        };
+
+        let link_id = self.api.create_link(share_id, &create_req).await?;
+
+        // ── Read the file ──────────────────────────────────────────────────
+        let file_bytes = tokio::fs::read(local_path).await.map_err(|e| Error::Io(e.to_string()))?;
+
+        // ── Generate session key and content key packet ────────────────────
+        let session_key = generate_session_key();
+        let content_key_packet = create_content_key_packet(&session_key, &node_key_armored)?;
+        let content_key_sig = pgp_sign(
+            content_key_packet.as_bytes(),
+            &node_key_armored,
+            &node_passphrase,
+        )?;
+
+        let x_attr = serde_json::json!({
+            "contentKeyPacket": content_key_packet,
+            "contentKeyPacketSignature": content_key_sig,
+        })
+        .to_string();
+
+        // ── Split into blocks and encrypt each block ───────────────────────
+        const BLOCK_SIZE: usize = 4 * 1024 * 1024;
+        let mut block_entries = Vec::new();
+        let mut encrypted_blocks: Vec<(u32, Vec<u8>)> = Vec::new();
+
+        let mut offset = 0usize;
+        let mut index = 0u32;
+        while offset < file_bytes.len() {
+            let end = (offset + BLOCK_SIZE).min(file_bytes.len());
+            let chunk = &file_bytes[offset..end];
+
+            let enc = encrypt_block(chunk, &session_key, index)?;
+
+            use sha2::{Digest, Sha256};
+            let hash = format!("{:x}", Sha256::digest(chunk));
+
+            block_entries.push(BlockEntry {
+                hash,
+                enc_signature: String::new(),
+                size: chunk.len() as u64,
+                index,
+            });
+            encrypted_blocks.push((index, enc));
+
+            offset = end;
+            index += 1;
+        }
+
+        // Verify we processed all blocks correctly.
+        if block_entries.len() as u32 != index {
+            return Err(Error::Crypto(
+                "block count mismatch after encryption".into(),
+            ));
+        }
+
+        // ── Create revision with block metadata ────────────────────────────
+        let rev = self
+            .api
+            .create_revision(
+                share_id,
+                &link_id,
+                &CreateRevisionReq {
+                    block_list: block_entries,
+                    manifest_signature: String::new(),
+                    signature_address: String::new(),
+                    x_attr,
+                },
+            )
+            .await?;
+
+        // ── Upload encrypted blocks in parallel (concurrency limit of 4) ──
+        for chunk in encrypted_blocks.chunks(4) {
+            let mut upload_futures = Vec::with_capacity(chunk.len());
+            let mut chunk_total = 0usize;
+
+            for (block_index, enc_data) in chunk {
+                chunk_total += enc_data.len();
+                let upload_url = rev
+                    .block_list
+                    .iter()
+                    .find(|b| b.index == *block_index)
+                    .ok_or_else(|| Error::Api {
+                        code: 0,
+                        message: format!("no upload URL for block {block_index}"),
+                    })?;
+                upload_futures.push(self.api.upload_block(&upload_url.url, enc_data));
+            }
+
+            self.upload_throttle.acquire(chunk_total).await;
+            futures::future::try_join_all(upload_futures).await?;
+        }
+
+        // ── Complete the revision (mark as active) ─────────────────────────
+        self.api
+            .complete_revision(share_id, &link_id, &rev.id)
+            .await?;
+
+        Ok(link_id)
     }
 
     /// Fetch the primary address key and its derived passphrase for upload

@@ -2,7 +2,7 @@
 
 A native CLI, GUI, and background daemon for Linux that provides two-way synchronisation with [Proton Drive](https://proton.me/drive). Built in Rust.
 
-> **Status: All core features implemented — authentication, file listing (with PGP name decryption), two-way sync, daemon IPC, and GUI are working.**
+> **Status: All major features implemented — authentication, PGP key chain, two-way sync, daemon IPC, GUI, inotify watching, conflict resolution, bandwidth throttle, packaging, and i18n are working. Transfer manager with time-window scheduling is the remaining item.**
 
 ---
 
@@ -70,11 +70,19 @@ crates/
 | CLI client (`proton-drive` — auth, ls, status, sync) | ✅ |
 | Iced 0.12 GUI desktop app (login, 2FA, browse, decrypt) | ✅ |
 | Daemon integration tests (7 passing) | ✅ |
-| Inotify file watching | 🔲 |
-| Rate limiting / bandwidth control | 🔲 |
-| Conflict resolution (GUI + CLI) | 🔲 |
-| Systemd user unit | 🔲 |
-| .deb / AppImage packaging | 🔲 |
+| Inotify file watching | ✅ |
+| Bandwidth throttling (token-bucket) | ✅ |
+| Conflict detection & resolution (GUI + CLI) | ✅ |
+| System tray icon (`--features tray`) | ✅ |
+| Systemd user unit | ✅ |
+| .deb / AppImage / Flatpak packaging | ✅ |
+| Transfer manager with time-window scheduling | 🔲 |
+| Parallel block download/upload (×4 concurrency) | ✅ |
+| E2E mock tests (wiremock) | ✅ |
+| Tracing (structured logging, env-filter) | ✅ |
+| i18n (English + Catalan) | ✅ |
+| Onboarding wizard (GUI) | ✅ |
+| Man pages (`proton-drive.1`, `protond.1`) | ✅ |
 
 ---
 
@@ -150,9 +158,12 @@ proton-drive sync                 # run full two-way sync (downloads + uploads)
 proton-gui
 ```
 
-The GUI currently calls proton-core directly (daemon IPC wiring is planned). It provides:
+The GUI communicates with the daemon for auth, sync, and conflict resolution, and calls proton-core directly for remote browsing. It provides:
+- Onboarding wizard with sync directory selection
 - Login view with username, password, and 2FA TOTP support
 - Browse view with folder navigation, decryption password prompt, and file listing
+- Conflict resolution view (Keep Local / Keep Remote / Rename)
+- System tray icon (build with `--features tray`; requires GTK dev libraries)
 - Dark theme
 
 ---
@@ -287,13 +298,19 @@ key password  ──unlocks──►  address private key
 - [x] `protond` IPC socket (daemon ↔ CLI/GUI protocol)
 - [x] CLI sync and status commands
 - [x] Iced 0.12 GUI desktop app
-- [ ] Inotify file watching (automatic change detection)
-- [ ] Rate limiting and bandwidth control
-- [ ] Conflict resolution (GUI + CLI)
-- [ ] System tray icon
-- [ ] Systemd user unit for auto-start
+- [x] Inotify file watching (automatic change detection)
+- [x] Bandwidth throttling (token-bucket)
+- [x] Conflict resolution (GUI + CLI)
+- [x] System tray icon (optional `tray` feature)
+- [x] Systemd user unit for auto-start
 - [ ] Transfer manager with time-window scheduling
-- [ ] Packaging (`.deb`, AppImage, Flatpak)
+- [x] Packaging (`.deb`, AppImage, Flatpak)
+- [x] E2E mock tests (wiremock)
+- [x] Parallel block download/upload (×4 concurrency)
+- [x] Tracing (structured logging, env-filter)
+- [x] i18n (English + Catalan)
+- [x] Onboarding wizard (GUI)
+- [x] Man pages (`proton-drive.1`, `protond.1`)
 
 ---
 

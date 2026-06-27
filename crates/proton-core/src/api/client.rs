@@ -5,6 +5,7 @@ use reqwest::{Client, header, StatusCode};
 use crate::{Error, Result};
 use crate::api::types::*;
 use crate::api::drive_types::*;
+use crate::api::drive_types::RenameLinkReq;
 
 /// Default Proton API base URL.
 const BASE_URL: &str = "https://mail.proton.me/api";
@@ -359,6 +360,44 @@ impl ApiClient {
             .send()
             .await
             .map_err(|e| Error::Http(e))?;
+        Ok(())
+    }
+
+    /// `PUT /drive/shares/{shareID}/links/{linkID}` — rename a link.
+    ///
+    /// Updates the encrypted name (and optionally NodeKey/NodePassphrase for folders).
+    /// The request body must contain at minimum the new encrypted `Name` and the
+    /// `SignatureAddress`.
+    pub async fn rename_link(&self, share_id: &str, link_id: &str, body: &RenameLinkReq) -> Result<()> {
+        #[derive(serde::Deserialize)]
+        struct Resp { code: i32 }
+        let text = self.authed(
+            &format!("/drive/shares/{share_id}/links/{link_id}"),
+            "PUT",
+            body,
+        ).await?;
+        let parsed: Resp = serde_json::from_str(&text)?;
+        if parsed.code != 1000 {
+            return Err(Error::Api { code: parsed.code, message: text });
+        }
+        Ok(())
+    }
+
+    /// `DELETE /drive/shares/{shareID}/links/{linkID}` — trash/delete a link.
+    pub async fn delete_link(&self, share_id: &str, link_id: &str) -> Result<()> {
+        let text = self
+            .authed(
+                &format!("/drive/shares/{share_id}/links/{link_id}"),
+                "DELETE",
+                &serde_json::json!({}),
+            )
+            .await?;
+        #[derive(serde::Deserialize)]
+        struct Resp { code: i32 }
+        let parsed: Resp = serde_json::from_str(&text)?;
+        if parsed.code != 1000 {
+            return Err(Error::Api { code: parsed.code, message: text });
+        }
         Ok(())
     }
 

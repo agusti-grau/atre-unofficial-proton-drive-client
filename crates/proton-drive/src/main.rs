@@ -52,6 +52,49 @@ enum Commands {
     Status,
     /// Sync the local drive with the remote (requires protond to be running).
     Sync,
+    /// Show or configure transfer schedule.
+    Transfer {
+        /// JSON config with time windows, or omit to show current config.
+        config: Option<String>,
+    },
+    /// Create a remote folder.
+    Mkdir {
+        /// Name of the new folder.
+        name: String,
+        /// Share ID (uses main share if omitted).
+        #[arg(long)]
+        share_id: Option<String>,
+        /// Parent folder link ID (uses root if omitted).
+        #[arg(long)]
+        parent_link_id: Option<String>,
+        /// Decryption password (will prompt if not provided).
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// Rename a remote file or folder.
+    Rename {
+        /// Share ID of the item.
+        #[arg(long)]
+        share_id: String,
+        /// Link ID of the item.
+        #[arg(long)]
+        link_id: String,
+        /// New plaintext name.
+        #[arg(long)]
+        new_name: String,
+        /// Decryption password (will prompt if not provided).
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// Delete a remote file or folder.
+    Rm {
+        /// Share ID of the item.
+        #[arg(long)]
+        share_id: String,
+        /// Link ID of the item.
+        #[arg(long)]
+        link_id: String,
+    },
     /// List or resolve conflicts.
     Resolve {
         /// Local path of the conflicted file (omit to list all conflicts).
@@ -92,6 +135,10 @@ async fn main() -> Result<()> {
         Commands::Ls { recursive, decrypt, .. } => cmd_ls(recursive, decrypt).await,
         Commands::Status => cmd_status().await,
         Commands::Sync => cmd_sync().await,
+        Commands::Transfer { config } => cmd_transfer(config).await,
+        Commands::Mkdir { name, share_id, parent_link_id, password } => cmd_mkdir(name, share_id, parent_link_id, password).await,
+        Commands::Rename { share_id, link_id, new_name, password } => cmd_rename(share_id, link_id, new_name, password).await,
+        Commands::Rm { share_id, link_id } => cmd_rm(share_id, link_id).await,
         Commands::Resolve { path, strategy } => cmd_resolve(path, strategy).await,
     }
 }
@@ -302,6 +349,175 @@ async fn cmd_status() -> Result<()> {
             println!("{}", t!("status.not_logged_in"));
         }
     }
+    Ok(())
+}
+
+// ── Transfer schedule ──────────────────────────────────────────────────────
+
+async fn cmd_transfer(config: Option<String>) -> Result<()> {
+    let mut client = IpcClient::connect().await?;
+
+    match config {
+        Some(json_str) => {
+            // SET config.
+            let params: serde_json::Value =
+                serde_json::from_str(&json_str).context("Invalid JSON config")?;
+            let resp = client
+                .request("transfer.config", params)
+                .await?;
+            if let Some(err) = resp.error {
+                anyhow::bail!("transfer config failed: {}", err.message);
+            }
+            if let Some(result) = resp.result {
+                let allowed = result
+                    .get("transfers_allowed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                println!("{}", t!("transfer.config_updated"));
+                if allowed {
+                    println!("{}", t!("transfer.allowed"));
+                } else {
+                    println!("{}", t!("transfer.not_allowed"));
+                }
+            }
+        }
+        None => {
+            // GET config.
+            let resp = client
+                .request("transfer.config", serde_json::json!({}))
+                .await?;
+            if let Some(err) = resp.error {
+                anyhow::bail!("transfer config failed: {}", err.message);
+            }
+            if let Some(result) = resp.result {
+                let allowed = result
+                    .get("transfers_allowed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if allowed {
+                    println!("{}", t!("transfer.allowed"));
+                } else {
+                    println!("{}", t!("transfer.not_allowed"));
+                }
+
+                if let Some(cfg) = result.get("config") {
+                    if let Some(windows) = cfg.get("windows").and_then(|v| v.as_array()) {
+                        if windows.is_empty() {
+                            println!("{}", t!("transfer.no_schedule"));
+                        } else {
+                            println!("{}", t!("transfer.schedule"));
+                            for w in windows {
+                                let days = w
+                                    .get("days")
+                                    .and_then(|v| v.as_array())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|d| d.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    })
+                                    .unwrap_or_else(|| "*".into());
+                                let start = w
+                                    .get("start")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let end = w
+                                    .get("end")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                println!("  {days}: {start} → {end}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Mkdir ──────────────────────────────────────────────────────────────────
+
+async fn cmd_mkdir(name: String, share_id: Option<String>, parent_link_id: Option<String>, password: Option<String>) -> Result<()> {
+    let password = match password {
+        Some(p) => p,
+        None => rpassword::prompt_password("Password (for key decryption): ")
+            .context("Failed to read password")?,
+    };
+
+    let mut client = IpcClient::connect().await?;
+
+    let resp = client
+        .request(
+            "drive.create_folder",
+            serde_json::json!({
+                "share_id": share_id,
+                "parent_link_id": parent_link_id,
+                "folder_name": name,
+                "password": password,
+            }),
+        )
+        .await?;
+
+    if let Some(err) = resp.error {
+        anyhow::bail!("create folder failed: {} (code {})", err.message, err.code);
+    }
+
+    if let Some(result) = resp.result {
+        let link_id = result.get("link_id").and_then(|v| v.as_str()).unwrap_or("?");
+        println!("{}", t!("create_folder.success", name = &name));
+        println!("  link_id: {link_id}");
+    }
+    Ok(())
+}
+
+// ── Rename ─────────────────────────────────────────────────────────────────
+
+async fn cmd_rename(share_id: String, link_id: String, new_name: String, password: Option<String>) -> Result<()> {
+    let password = match password {
+        Some(p) => p,
+        None => rpassword::prompt_password("Password (for key decryption): ")
+            .context("Failed to read password")?,
+    };
+
+    let mut client = IpcClient::connect().await?;
+    let resp = client
+        .request(
+            "drive.rename",
+            serde_json::json!({
+                "share_id": share_id,
+                "link_id": link_id,
+                "new_name": new_name,
+                "password": password,
+            }),
+        )
+        .await?;
+
+    if let Some(err) = resp.error {
+        anyhow::bail!("rename failed: {} (code {})", err.message, err.code);
+    }
+
+    println!("{}", t!("rename.success", name = &new_name));
+    Ok(())
+}
+
+// ── Delete ─────────────────────────────────────────────────────────────────
+
+async fn cmd_rm(share_id: String, link_id: String) -> Result<()> {
+    let mut client = IpcClient::connect().await?;
+    let resp = client
+        .request("drive.delete", serde_json::json!({
+            "share_id": share_id,
+            "link_id": link_id,
+        }))
+        .await?;
+
+    if let Some(err) = resp.error {
+        anyhow::bail!("delete failed: {} (code {})", err.message, err.code);
+    }
+
+    println!("{}", t!("delete.success", name = &link_id));
     Ok(())
 }
 

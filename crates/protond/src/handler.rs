@@ -5,10 +5,14 @@ use proton_core::api::ApiClient;
 use tracing; // ensure tracing is imported
 use proton_core::auth::{self, LoginResult};
 use proton_core::db::StateDb;
+use proton_core::api::drive_types::{CreateFolderReq, RenameLinkReq};
+use proton_core::crypto::{compute_name_hash, generate_hash_key, generate_node_keypair, pgp_decrypt, pgp_encrypt, pgp_sign};
+use proton_core::drive::keyring::derive_key_password;
 use proton_core::drive::DriveClient;
 use proton_core::ipc::{IpcRequest, IpcResponse};
 use proton_core::keyring;
-use proton_core::sync::SyncEngine;
+use proton_core::sync::{SyncEngine, SyncReport};
+use proton_core::transfer::TransferConfig;
 use tokio::sync::Mutex;
 
 /// Token bucket rate limiter — simple in-memory.
@@ -51,6 +55,14 @@ pub struct IpcHandler {
     db: Arc<StateDb>,
     base_path: PathBuf,
     rate_limiter: Mutex<TokenBucket>,
+    sync_state: Mutex<SyncState>,
+    last_report: Mutex<Option<SyncReport>>,
+}
+
+#[derive(Debug, Clone)]
+enum SyncState {
+    Idle,
+    Syncing,
 }
 
 impl IpcHandler {
@@ -78,13 +90,15 @@ impl IpcHandler {
             db,
             base_path,
             rate_limiter: Mutex::new(TokenBucket::new(10, 10.0)), // 10 req/s
+            sync_state: Mutex::new(SyncState::Idle),
+            last_report: Mutex::new(None),
         }
     }
 
     pub async fn handle(&self, req: IpcRequest) -> IpcResponse {
         // Rate limit check for mutating drive operations.
         match req.method.as_str() {
-            "drive.sync" | "drive.ls" | "drive.ls_decrypted" | "drive.resolve" => {
+            "drive.sync" | "drive.ls" | "drive.ls_decrypted" | "drive.resolve" | "drive.delete" | "drive.rename" | "drive.create_folder" | "drive.upload_file" => {
                 let mut limiter = self.rate_limiter.lock().await;
                 if !limiter.acquire() {
                     return IpcResponse::err(
@@ -108,12 +122,35 @@ impl IpcHandler {
             "drive.sync" => self.handle_drive_sync(req).await,
             "drive.conflicts" => self.handle_drive_conflicts(req).await,
             "drive.resolve" => self.handle_drive_resolve(req).await,
+            "drive.delete" => self.handle_drive_delete(req).await,
+            "drive.rename" => self.handle_drive_rename(req).await,
+            "drive.create_folder" => self.handle_drive_create_folder(req).await,
+            "drive.upload_file" => self.handle_drive_upload_file(req).await,
+            "transfer.config" => self.handle_transfer_config(req).await,
             _ => IpcResponse::err(req.id, -1, format!("unknown method: {}", req.method)),
         }
     }
 
+    /// Check if transfers are allowed by the current schedule.
+    pub async fn transfers_allowed(&self) -> bool {
+        let config = self
+            .db
+            .get_meta("transfer.config")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<TransferConfig>(&s).ok())
+            .unwrap_or_default();
+        config.is_in_window()
+    }
+
     /// Called by the background loop. Uses cached password if available.
     pub async fn trigger_sync(&self) {
+        // Respect transfer schedule.
+        if !self.transfers_allowed().await {
+            tracing::debug!("background sync skipped: outside transfer window");
+            return;
+        }
+
         let session = {
             let api = self.api.lock().await;
             api.as_ref().and_then(|a| a.session())
@@ -132,13 +169,21 @@ impl IpcHandler {
             }
         };
 
+        *self.sync_state.lock().await = SyncState::Syncing;
         let api = match ApiClient::new() {
             Ok(c) => c.with_session(session),
-            Err(_) => return,
+            Err(_) => {
+                *self.sync_state.lock().await = SyncState::Idle;
+                return;
+            }
         };
         let mut engine = SyncEngine::new(api, Arc::clone(&self.db), self.base_path.clone());
-        match engine.sync(&password).await {
+        let result = engine.sync(&password).await;
+        match &result {
             Ok(report) => {
+                *self.last_report.lock().await = Some(report.clone());
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = self.db.set_meta("last_sync", &now);
                 if report.has_errors() {
                     tracing::warn!("background sync completed with {} errors", report.errors.len());
                     for err in &report.errors {
@@ -152,6 +197,7 @@ impl IpcHandler {
                 tracing::error!("background sync failed: {e}");
             }
         }
+        *self.sync_state.lock().await = SyncState::Idle;
     }
 
     /// Called by the background loop to refresh the auth token.
@@ -306,6 +352,11 @@ impl IpcHandler {
         let conflicts = self.db.count_nodes("conflict").unwrap_or(0);
         let last_sync = self.db.get_meta("last_sync").unwrap_or(None);
 
+        let state_str = match &*self.sync_state.lock().await {
+            SyncState::Idle => "idle",
+            SyncState::Syncing => "syncing",
+        };
+        let report_val = self.last_report.lock().await.clone();
         IpcResponse::ok(req.id, serde_json::json!({
             "logged_in": logged_in,
             "username": username,
@@ -316,6 +367,8 @@ impl IpcHandler {
                 "conflicts": conflicts,
             },
             "last_sync": last_sync,
+            "sync_state": state_str,
+            "last_report": report_val,
         }))
     }
 
@@ -590,15 +643,457 @@ impl IpcHandler {
             Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
         };
 
+        *self.sync_state.lock().await = SyncState::Syncing;
         let mut engine = SyncEngine::new(api, Arc::clone(&self.db), self.base_path.clone());
-        match engine.sync(&password).await {
+        let result = engine.sync(&password).await;
+        *self.sync_state.lock().await = SyncState::Idle;
+
+        match result {
             Ok(report) => {
-                // Cache the password for background sync cycles.
+                *self.last_report.lock().await = Some(report.clone());
                 *self.password_cache.lock().await = Some(password);
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = self.db.set_meta("last_sync", &now);
                 let value = serde_json::to_value(&report).unwrap_or_default();
                 IpcResponse::ok(req.id, value)
             }
             Err(e) => IpcResponse::err(req.id, -1, format!("sync failed: {e}")),
+        }
+    }
+
+    async fn handle_drive_rename(&self, req: IpcRequest) -> IpcResponse {
+        let share_id = match req.params.get("share_id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'share_id'"),
+        };
+        let link_id = match req.params.get("link_id").and_then(|v| v.as_str()) {
+            Some(l) => l.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'link_id'"),
+        };
+        let new_name = match req.params.get("new_name").and_then(|v| v.as_str()) {
+            Some(n) => n.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'new_name'"),
+        };
+        let password = match req.params.get("password").and_then(|v| v.as_str()) {
+            Some(p) => p.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'password'"),
+        };
+
+        let session = {
+            let api = self.api.lock().await;
+            api.as_ref().and_then(|a| a.session())
+        };
+        let session = match session {
+            Some(s) => s,
+            None => return IpcResponse::err(req.id, -1, "Not logged in"),
+        };
+
+        // Fetch signature address and link info using ApiClient directly.
+        let lookup_api = match ApiClient::new() {
+            Ok(c) => c.with_session(session.clone()),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+
+        let addresses = match lookup_api.get_addresses().await {
+            Ok(a) => a,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("get addresses: {e}")),
+        };
+        let signature_address = addresses.first().map(|a| a.email.clone()).unwrap_or_default();
+
+        let link = match lookup_api.get_link(&share_id, &link_id).await {
+            Ok(l) => l,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("get link: {e}")),
+        };
+        drop(lookup_api);
+
+        // Build keyring using DriveClient.
+        let drive_api = match ApiClient::new() {
+            Ok(c) => c.with_session(session.clone()),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+        let drive = DriveClient::new(drive_api);
+        let (mut kr, _sid, root_link_id) = match drive.build_keyring(&password).await {
+            Ok(k) => k,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("build keyring: {e}")),
+        };
+
+        let parent_key_id = match &link.parent_link_id {
+            Some(pid) => pid.clone(),
+            None => root_link_id.clone(),
+        };
+
+        // Unlock parent key if needed.
+        if parent_key_id != root_link_id && parent_key_id != share_id {
+            let parent_lookup = match ApiClient::new() {
+                Ok(c) => c.with_session(session.clone()),
+                Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+            };
+            let parent = match parent_lookup.get_link(&share_id, &parent_key_id).await {
+                Ok(p) => p,
+                Err(e) => return IpcResponse::err(req.id, -1, format!("get parent link: {e}")),
+            };
+            drop(parent_lookup);
+            let grandparent_id = parent.parent_link_id.clone().unwrap_or_else(|| root_link_id.clone());
+            if let Err(e) = kr.unlock_with_parent(
+                &parent_key_id,
+                &grandparent_id,
+                &parent.node_key,
+                &parent.node_passphrase,
+            ) {
+                return IpcResponse::err(req.id, -1, format!("unlock parent: {e}"));
+            }
+        }
+
+        let encrypted_name = match kr.encrypt_name_raw(&new_name, &parent_key_id) {
+            Ok(n) => n,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("encrypt name: {e}")),
+        };
+
+        let rename_api = match ApiClient::new() {
+            Ok(c) => c.with_session(session),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+
+        match rename_api
+            .rename_link(
+                &share_id,
+                &link_id,
+                &RenameLinkReq { name: encrypted_name, signature_address },
+            )
+            .await
+        {
+            Ok(()) => IpcResponse::ok(req.id, serde_json::json!({ "status": "renamed" })),
+            Err(e) => IpcResponse::err(req.id, -1, format!("rename failed: {e}")),
+        }
+    }
+
+    async fn handle_drive_create_folder(&self, req: IpcRequest) -> IpcResponse {
+        let folder_name = match req.params.get("folder_name").and_then(|v| v.as_str()) {
+            Some(n) => n.trim().to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'folder_name'"),
+        };
+        if folder_name.is_empty() {
+            return IpcResponse::err(req.id, -1, "folder_name must not be empty");
+        }
+        let password = match req.params.get("password").and_then(|v| v.as_str()) {
+            Some(p) => p.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'password'"),
+        };
+
+        let session = {
+            let api = self.api.lock().await;
+            api.as_ref().and_then(|a| a.session())
+        };
+        let session = match session {
+            Some(s) => s,
+            None => return IpcResponse::err(req.id, -1, "Not logged in"),
+        };
+
+        // Resolve share_id and parent_link_id, defaulting to main share root.
+        let lookup_api = match ApiClient::new() {
+            Ok(c) => c.with_session(session.clone()),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+        let drive_lookup = DriveClient::new(lookup_api);
+        let (default_share_id, default_root_link_id) = match drive_lookup.find_main_share().await {
+            Ok(ids) => ids,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("find main share: {e}")),
+        };
+        drop(drive_lookup);
+
+        let share_id = req.params.get("share_id").and_then(|v| v.as_str()).unwrap_or(&default_share_id).to_string();
+        let parent_link_id = req.params.get("parent_link_id").and_then(|v| v.as_str()).unwrap_or(&default_root_link_id).to_string();
+
+        // Build keyring.
+        let api = match ApiClient::new() {
+            Ok(c) => c.with_session(session.clone()),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+        let drive = DriveClient::new(api);
+
+        let (mut kr, _sid, root_link_id) = match drive.build_keyring(&password).await {
+            Ok(k) => k,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("build keyring: {e}")),
+        };
+
+        // Get parent link to determine if it's the root or a child.
+        let parent_key_id = if parent_link_id == root_link_id {
+            root_link_id.clone()
+        } else {
+            parent_link_id.clone()
+        };
+
+        // Fetch parent link to get its crypto material.
+        let parent_lookup = match ApiClient::new() {
+            Ok(c) => c.with_session(session.clone()),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+        let parent = match parent_lookup.get_link(&share_id, &parent_link_id).await {
+            Ok(p) => p,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("get parent link: {e}")),
+        };
+        drop(parent_lookup);
+
+        // Unlock the parent key if needed.
+        if parent_link_id != root_link_id {
+            let grandparent_id = parent.parent_link_id.clone().unwrap_or_else(|| root_link_id.clone());
+            if let Err(e) = kr.unlock_with_parent(
+                &parent_key_id,
+                &grandparent_id,
+                &parent.node_key,
+                &parent.node_passphrase,
+            ) {
+                return IpcResponse::err(req.id, -1, format!("unlock parent: {e}"));
+            }
+        }
+
+        // Generate crypto material for the new folder.
+        let (node_key, node_pass) = match generate_node_keypair() {
+            Ok(p) => p,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("generate keypair: {e}")),
+        };
+        let hash_key = generate_hash_key();
+
+        // Encrypt name with parent's key.
+        let enc_name = match kr.encrypt_name_raw(&folder_name, &parent_key_id) {
+            Ok(n) => n,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("encrypt name: {e}")),
+        };
+
+        // Encrypt passphrase with parent's node key.
+        let enc_pass = match pgp_encrypt(
+            hex::encode(&node_pass).as_bytes(),
+            &parent.node_key,
+        ) {
+            Ok(p) => p,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("encrypt passphrase: {e}")),
+        };
+
+        // Get signature address and sign passphrase.
+        let addr_api = match ApiClient::new() {
+            Ok(c) => c.with_session(session.clone()),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+        let addresses = match addr_api.get_addresses().await {
+            Ok(a) => a,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("get addresses: {e}")),
+        };
+        let signature_address = addresses.first().map(|a| a.email.clone()).unwrap_or_default();
+        drop(addr_api);
+
+        // Get address key for signing.
+        let address_key_info = {
+            let addr_api = match ApiClient::new() {
+                Ok(c) => c.with_session(session.clone()),
+                Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+            };
+            let addr = match addr_api.get_addresses().await {
+                Ok(a) => a.into_iter().next(),
+                Err(_) => None,
+            };
+            addr.and_then(|a| {
+                let key = a.keys.into_iter().find(|k| k.active == 1)?;
+                let key_password = derive_key_password(&password, None).ok()?;
+                Some((key.private_key, key_password))
+            })
+        };
+
+        let (pass_sig, sig_addr) = match &address_key_info {
+            Some((priv_key, key_pass)) => {
+                match pgp_sign(enc_pass.as_bytes(), priv_key, key_pass) {
+                    Ok(sig) => (sig, signature_address.clone()),
+                    Err(_) => (String::new(), signature_address.clone()),
+                }
+            }
+            None => (String::new(), signature_address.clone()),
+        };
+
+        // Compute name hash if parent has a hash key.
+        let name_hash;
+        let enc_hash_key;
+        let parent_hash_key_str = parent.folder_properties.as_ref().map(|p| p.node_hash_key.as_str()).unwrap_or("");
+        if parent_hash_key_str.is_empty() {
+            name_hash = String::new();
+            enc_hash_key = String::new();
+        } else {
+            let (parent_key, parent_pass) = match kr.get_key(&parent_key_id) {
+                Some(k) => k,
+                None => return IpcResponse::err(req.id, -1, "parent key not found"),
+            };
+            let parent_hash_key = match pgp_decrypt(parent_hash_key_str, parent_key, parent_pass) {
+                Ok(k) => k,
+                Err(e) => return IpcResponse::err(req.id, -1, format!("decrypt hash key: {e}")),
+            };
+            name_hash = compute_name_hash(&parent_hash_key, &folder_name);
+            enc_hash_key = match pgp_encrypt(&hash_key, &node_key) {
+                Ok(k) => k,
+                Err(e) => return IpcResponse::err(req.id, -1, format!("encrypt hash key: {e}")),
+            };
+        }
+
+        let req_body = CreateFolderReq {
+            parent_link_id,
+            name: enc_name,
+            hash: name_hash,
+            node_key,
+            node_hash_key: enc_hash_key,
+            node_passphrase: enc_pass,
+            node_passphrase_signature: pass_sig,
+            signature_address: sig_addr,
+        };
+
+        let create_api = match ApiClient::new() {
+            Ok(c) => c.with_session(session),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+
+        match create_api.create_link(&share_id, &req_body).await {
+            Ok(id) => IpcResponse::ok(req.id, serde_json::json!({ "status": "created", "link_id": id })),
+            Err(e) => IpcResponse::err(req.id, -1, format!("create folder failed: {e}")),
+        }
+    }
+
+    async fn handle_drive_upload_file(&self, req: IpcRequest) -> IpcResponse {
+        let share_id = match req.params.get("share_id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'share_id'"),
+        };
+        let parent_link_id = match req.params.get("parent_link_id").and_then(|v| v.as_str()) {
+            Some(p) => p.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'parent_link_id'"),
+        };
+        let local_path = match req.params.get("local_path").and_then(|v| v.as_str()) {
+            Some(p) => p.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'local_path'"),
+        };
+        let password = match req.params.get("password").and_then(|v| v.as_str()) {
+            Some(p) => p.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'password'"),
+        };
+
+        let session = {
+            let api = self.api.lock().await;
+            api.as_ref().and_then(|a| a.session())
+        };
+        let session = match session {
+            Some(s) => s,
+            None => return IpcResponse::err(req.id, -1, "Not logged in"),
+        };
+
+        // Build keyring.
+        let api = match ApiClient::new() {
+            Ok(c) => c.with_session(session.clone()),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+        let drive = DriveClient::new(api);
+        let (mut kr, _sid, root_link_id) = match drive.build_keyring(&password).await {
+            Ok(k) => k,
+            Err(e) => return IpcResponse::err(req.id, -1, format!("build keyring: {e}")),
+        };
+
+        // Unlock parent key if needed.
+        if parent_link_id != root_link_id {
+            let parent_lookup = match ApiClient::new() {
+                Ok(c) => c.with_session(session.clone()),
+                Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+            };
+            let parent = match parent_lookup.get_link(&share_id, &parent_link_id).await {
+                Ok(p) => p,
+                Err(e) => return IpcResponse::err(req.id, -1, format!("get parent link: {e}")),
+            };
+            drop(parent_lookup);
+            let grandparent_id = parent.parent_link_id.unwrap_or_else(|| root_link_id.clone());
+            let parent_key_id = parent_link_id.clone();
+            if let Err(e) = kr.unlock_with_parent(
+                &parent_key_id,
+                &grandparent_id,
+                &parent.node_key,
+                &parent.node_passphrase,
+            ) {
+                return IpcResponse::err(req.id, -1, format!("unlock parent: {e}"));
+            }
+        }
+
+        let engine_api = match ApiClient::new() {
+            Ok(c) => c.with_session(session),
+            Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
+        };
+        let mut engine = SyncEngine::new(engine_api, Arc::clone(&self.db), self.base_path.clone());
+
+        match engine.upload_file(&share_id, &parent_link_id, &std::path::Path::new(&local_path), &kr, &password).await {
+            Ok(link_id) => IpcResponse::ok(req.id, serde_json::json!({ "status": "uploaded", "link_id": link_id })),
+            Err(e) => IpcResponse::err(req.id, -1, format!("upload failed: {e}")),
+        }
+    }
+
+    async fn handle_drive_delete(&self, req: IpcRequest) -> IpcResponse {
+        let share_id = match req.params.get("share_id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'share_id'"),
+        };
+        let link_id = match req.params.get("link_id").and_then(|v| v.as_str()) {
+            Some(l) => l.to_string(),
+            None => return IpcResponse::err(req.id, -1, "Missing required param: 'link_id'"),
+        };
+
+        let api = self.api.lock().await;
+        let client = match &*api {
+            Some(c) => c,
+            None => return IpcResponse::err(req.id, -1, "Not logged in"),
+        };
+
+        match client.delete_link(&share_id, &link_id).await {
+            Ok(()) => IpcResponse::ok(req.id, serde_json::json!({ "status": "deleted" })),
+            Err(e) => IpcResponse::err(req.id, -1, format!("delete failed: {e}")),
+        }
+    }
+
+    async fn handle_transfer_config(&self, req: IpcRequest) -> IpcResponse {
+        // Check if this is a SET or GET.
+        let has_windows = req.params.get("windows").is_some();
+
+        if has_windows {
+            // SET config.
+            let config: TransferConfig = match serde_json::from_value(req.params.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return IpcResponse::err(req.id, -1, format!("invalid config: {e}"));
+                }
+            };
+            let json = match serde_json::to_string(&config) {
+                Ok(s) => s,
+                Err(e) => {
+                    return IpcResponse::err(req.id, -1, format!("serialize: {e}"));
+                }
+            };
+            if let Err(e) = self.db.set_meta("transfer.config", &json) {
+                return IpcResponse::err(req.id, -1, format!("db error: {e}"));
+            }
+            let allowed = config.is_in_window();
+            IpcResponse::ok(
+                req.id,
+                serde_json::json!({
+                    "config": config,
+                    "transfers_allowed": allowed,
+                }),
+            )
+        } else {
+            // GET config.
+            let config = self
+                .db
+                .get_meta("transfer.config")
+                .ok()
+                .flatten()
+                .and_then(|s| serde_json::from_str::<TransferConfig>(&s).ok())
+                .unwrap_or_default();
+            let allowed = config.is_in_window();
+            IpcResponse::ok(
+                req.id,
+                serde_json::json!({
+                    "config": config,
+                    "transfers_allowed": allowed,
+                }),
+            )
         }
     }
 

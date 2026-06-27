@@ -159,6 +159,77 @@ fn multiple_requests_same_connection() {
 }
 
 #[test]
+#[test]
+fn drive_rename_not_logged_in() {
+    let d = Daemon::start();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
+        let resp = client
+            .request(
+                "drive.rename",
+                serde_json::json!({
+                    "share_id": "test",
+                    "link_id": "test",
+                    "new_name": "newname",
+                    "password": "test",
+                }),
+            )
+            .await
+            .unwrap();
+        let err = resp.error.expect("expected error");
+        assert_eq!(err.message, "Not logged in");
+    });
+}
+
+#[test]
+fn drive_rename_missing_params() {
+    let d = Daemon::start();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
+        let resp = client
+            .request("drive.rename", serde_json::json!({}))
+            .await
+            .unwrap();
+        let err = resp.error.expect("expected error");
+        assert!(err.message.contains("Missing required param"));
+    });
+}
+
+#[test]
+fn drive_delete_not_logged_in() {
+    let d = Daemon::start();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
+        let resp = client
+            .request("drive.delete", serde_json::json!({
+                "share_id": "test",
+                "link_id": "test",
+            }))
+            .await
+            .unwrap();
+        let err = resp.error.expect("expected error");
+        assert_eq!(err.message, "Not logged in");
+    });
+}
+
+#[test]
+fn drive_delete_missing_params() {
+    let d = Daemon::start();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
+        let resp = client
+            .request("drive.delete", serde_json::json!({}))
+            .await
+            .unwrap();
+        let err = resp.error.expect("expected error");
+        assert!(err.message.contains("Missing required param"));
+    });
+}
+
 fn concurrent_connections() {
     let d = Daemon::start();
     let rt = tokio::runtime::Runtime::new().unwrap();

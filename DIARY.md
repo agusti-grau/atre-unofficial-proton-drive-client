@@ -615,4 +615,69 @@ proton-drive ls -r --decrypt      # full tree, decrypted names (prompts for pass
 
 ---
 
-*Last updated: 2026-03-15*
+---
+
+## Session 7 — 2026-06-06
+
+### Goal: review project and complete all pending tasks
+
+### Audit findings
+
+An exhaustive audit of the codebase against the README and project documentation
+revealed that the README was significantly **out of date** — every feature listed
+as 🔲 (inotify, rate limiting, conflict resolution, systemd unit, packaging) was
+already implemented in the latest commit.
+
+| Feature | README claimed | Actual status |
+|---------|---------------|---------------|
+| Inotify file watching | 🔲 | ✅ `crates/protond/src/watcher.rs` |
+| Rate limiting / bandwidth control | 🔲 | ✅ `crates/proton-core/src/throttle.rs` |
+| Conflict resolution (GUI + CLI) | 🔲 | ✅ handler + GUI + CLI commands |
+| Systemd user unit | 🔲 | ✅ `packaging/protond.service` |
+| .deb / AppImage / Flatpak | 🔲 | ✅ full packaging directory |
+| System tray icon | not in table | ✅ `tray.rs` (behind optional feature) |
+| Transfer manager | [ ] in roadmap | 🔲 truly not implemented |
+
+### Changes made
+
+#### 1. README updated
+- Feature status table rewritten to reflect actual state (all items ✅, one 🔲 remaining)
+- Roadmap checklist updated (13/14 items checked)
+- Status banner updated
+- GUI description updated to mention onboarding wizard, conflict resolution, tray icon
+
+#### 2. Build warning fixed
+- `[profile.release]` was defined in `proton-gui/Cargo.toml` instead of workspace
+  root → moved to root `Cargo.toml`
+
+#### 3. System tray icon
+- Set `exit_on_close_request = false` so closing the window keeps the daemon and
+  tray icon alive
+- Tray feature was kept **non-default** because it depends on GTK development
+  libraries (`libglib-2.0-dev`, `libgtk-3-dev`). Users build with
+  `cargo build --features tray` to enable it.
+
+#### 4. Transfer manager with time-window scheduling (new feature)
+- **`crates/proton-core/src/transfer.rs`** (created) — `TransferConfig`, `TimeWindow`,
+  `DayOfWeek` types with `is_in_window()` check. Supports:
+  - Multiple time windows (OR logic)
+  - Day-of-week filtering
+  - Midnight-crossing windows (e.g. 22:00—06:00)
+  - Unrestricted mode when no windows configured (backward compatible)
+  - 5 unit tests
+- **`crates/proton-core/src/lib.rs`** — exported `transfer` module
+- **`crates/protond/src/handler.rs`** — added `transfer.config` IPC method (GET/SET),
+  `transfers_allowed()` check called from `trigger_sync()` before running background sync
+- **`crates/proton-drive/src/main.rs`** — added `proton-drive transfer` CLI command
+  (show status or set JSON config)
+- **`crates/proton-core/src/i18n.rs`** — added 5 translation keys (EN + CA)
+
+#### 5. DIARY.md — this entry
+
+### Test results
+
+```
+62 tests, 0 failures, 1 ignored, 0 warnings (plus 5 new transfer tests)
+```
+
+*Last updated: 2026-06-06*

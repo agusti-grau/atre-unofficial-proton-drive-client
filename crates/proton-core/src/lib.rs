@@ -10,6 +10,7 @@ pub mod keyring;
 pub mod local;
 pub mod sync;
 pub mod throttle;
+pub mod transfer;
 
 pub use error::Error;
 pub type Result<T> = std::result::Result<T, Error>;
