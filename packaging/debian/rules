@@ -18,5 +18,6 @@ override_dh_auto_install:
 	install -Dm644 packaging/protond.service       debian/proton-drive/usr/lib/systemd/user/protond.service
 	install -Dm644 packaging/proton-drive.desktop  debian/proton-drive/usr/share/applications/proton-drive.desktop
 	install -Dm644 packaging/icons/proton-drive.svg debian/proton-drive/usr/share/icons/hicolor/scalable/apps/proton-drive.svg
+	mkdir -p debian/proton-drive/usr/bin
 	ln -s /usr/lib/proton-drive/proton-drive       debian/proton-drive/usr/bin/proton-drive
 	ln -s /usr/lib/proton-drive/proton-gui         debian/proton-drive/usr/bin/proton-gui

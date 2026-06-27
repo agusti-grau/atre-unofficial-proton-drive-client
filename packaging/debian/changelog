@@ -8,4 +8,4 @@ proton-drive (0.1.0) unstable; urgency=medium
   * Transfer scheduling and pause/resume.
   * Conflict detection and resolution.
 
- -- agusti-grau  Fri, 27 Jun 2026 08:00:00 +0000
+ -- agusti-grau <agusti-grau@users.noreply.github.com>  Fri, 27 Jun 2026 08:00:00 +0000
