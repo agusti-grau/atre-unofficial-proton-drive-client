@@ -7,7 +7,8 @@ protond \- Proton Drive sync daemon
 .B protond
 is the background sync daemon for Proton Drive. It runs as a user service,
 watches the local sync directory for changes, periodically synchronizes
-with the remote server, and handles IPC requests from the CLI and GUI.
+with the remote server, respects transfer schedules and manual pause/resume,
+and handles IPC requests from the CLI and GUI.
 .SH USAGE
 protond is typically started automatically by the GUI or via systemd:
 .nf

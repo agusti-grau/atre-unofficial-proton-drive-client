@@ -19,7 +19,7 @@
 //! x = expand_hash(bcrypt_output_bytes ‖ modulus_bytes)
 //! ```
 
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::{Error, Result};
 
@@ -61,8 +61,8 @@ pub fn hash_password(password: &str, server_salt_b64: &str) -> Result<Vec<u8>> {
     // Normalise "$2b$" → "$2y$".  The hash bytes are identical; Proton always
     // uses $2y$ and passes the full string into expand_hash, so the prefix
     // must match for x to be correct.
-    let normalised = if hashed.starts_with("$2b$") {
-        format!("$2y${}", &hashed[4..])
+    let normalised = if let Some(stripped) = hashed.strip_prefix("$2b$") {
+        format!("$2y${}", stripped)
     } else {
         hashed
     };
@@ -75,7 +75,7 @@ pub fn hash_password(password: &str, server_salt_b64: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{Engine, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine};
 
     /// Encode 10 zero bytes — Proton's typical server salt length.
     fn ten_byte_salt_b64() -> String {
@@ -103,7 +103,10 @@ mod tests {
     fn hash_password_outputs_2y_prefix() {
         let result = hash_password("test-password", &ten_byte_salt_b64()).unwrap();
         let s = std::str::from_utf8(&result).unwrap();
-        assert!(s.starts_with("$2y$10$"), "expected $2y$10$ prefix, got: {s}");
+        assert!(
+            s.starts_with("$2y$10$"),
+            "expected $2y$10$ prefix, got: {s}"
+        );
     }
 
     #[test]

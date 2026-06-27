@@ -474,6 +474,7 @@ impl SyncEngine {
     /// creates them on the server in depth order.  Newly created folders are
     /// inserted into `remote_by_path` so subsequent file uploads can find
     /// their parent.
+    #[allow(clippy::too_many_arguments)]
     async fn ensure_remote_folders(
         &self,
         report: &mut SyncReport,
@@ -486,7 +487,7 @@ impl SyncEngine {
     ) {
         // Collect local-only directories and sort by depth (shallowest first).
         let mut new_dirs: Vec<(usize, PathBuf, String)> = Vec::new();
-        for (_, node) in local_nodes.iter().enumerate() {
+        for node in local_nodes.iter() {
             if node.is_file {
                 continue;
             }
@@ -517,7 +518,7 @@ impl SyncEngine {
                 // This shouldn't normally happen but handle gracefully.
                 report
                     .errors
-                    .push(format!("cannot create root folder remotely"));
+                    .push("cannot create root folder remotely".to_string());
                 continue;
             } else {
                 match remote_by_path.get(&parent_path) {
@@ -1314,7 +1315,9 @@ impl SyncEngine {
             .to_string_lossy()
             .to_string();
 
-        let file_meta = tokio::fs::metadata(local_path).await.map_err(|e| Error::Io(e.to_string()))?;
+        let file_meta = tokio::fs::metadata(local_path)
+            .await
+            .map_err(|e| Error::Io(e.to_string()))?;
         let file_size = file_meta.len() as i64;
 
         // ── Generate node keypair for the new file ─────────────────────────
@@ -1370,7 +1373,9 @@ impl SyncEngine {
         let link_id = self.api.create_link(share_id, &create_req).await?;
 
         // ── Read the file ──────────────────────────────────────────────────
-        let file_bytes = tokio::fs::read(local_path).await.map_err(|e| Error::Io(e.to_string()))?;
+        let file_bytes = tokio::fs::read(local_path)
+            .await
+            .map_err(|e| Error::Io(e.to_string()))?;
 
         // ── Generate session key and content key packet ────────────────────
         let session_key = generate_session_key();

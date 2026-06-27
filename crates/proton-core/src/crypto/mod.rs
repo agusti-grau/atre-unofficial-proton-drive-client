@@ -11,10 +11,8 @@
 
 use std::io::Cursor;
 
-use aes::cipher::{
-    block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit,
-};
-use base64::{Engine, engine::general_purpose::STANDARD};
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use pgp::composed::cleartext::CleartextSignedMessage;
 use pgp::composed::KeyType;
 use pgp::crypto::hash::HashAlgorithm;
@@ -34,15 +32,11 @@ type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 /// - `armored_msg`  — PGP-armored ciphertext (the message to decrypt).
 /// - `armored_key`  — PGP-armored secret key that the message is encrypted to.
 /// - `key_passphrase` — Passphrase that unlocks `armored_key`.
-///                      Pass an empty slice if the key has no passphrase.
+///   Pass an empty slice if the key has no passphrase.
 ///
 /// # Returns
 /// The raw plaintext bytes of the decrypted message.
-pub fn pgp_decrypt(
-    armored_msg: &str,
-    armored_key: &str,
-    key_passphrase: &[u8],
-) -> Result<Vec<u8>> {
+pub fn pgp_decrypt(armored_msg: &str, armored_key: &str, key_passphrase: &[u8]) -> Result<Vec<u8>> {
     let (key, _) = SignedSecretKey::from_armor_single(Cursor::new(armored_key.as_bytes()))
         .map_err(|e| Error::Crypto(format!("key parse: {e}")))?;
 
@@ -203,10 +197,7 @@ pub fn generate_session_key() -> Vec<u8> {
 
 /// Create a base64-encoded content key packet by PGP-encrypting the session
 /// key with the node's key (public or private, armored).
-pub fn create_content_key_packet(
-    session_key: &[u8],
-    armored_node_key: &str,
-) -> Result<String> {
+pub fn create_content_key_packet(session_key: &[u8], armored_node_key: &str) -> Result<String> {
     use rand::rngs::OsRng;
 
     // Try as public key first, then as secret key.
@@ -279,8 +270,7 @@ pub fn generate_node_keypair() -> Result<(String, Vec<u8>)> {
     )
     .map_err(|e| Error::Crypto(format!("armor write: {e}")))?;
 
-    let armored = String::from_utf8(buf)
-        .map_err(|e| Error::Crypto(format!("armor utf8: {e}")))?;
+    let armored = String::from_utf8(buf).map_err(|e| Error::Crypto(format!("armor utf8: {e}")))?;
 
     Ok((armored, passphrase))
 }
@@ -345,8 +335,7 @@ pub fn compute_name_hash(hash_key: &[u8], plaintext_name: &str) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(hash_key)
-        .expect("HMAC accepts 32-byte key");
+    let mut mac = Hmac::<Sha256>::new_from_slice(hash_key).expect("HMAC accepts 32-byte key");
     mac.update(plaintext_name.as_bytes());
     let result = mac.finalize();
     let code = result.into_bytes();
@@ -388,7 +377,11 @@ pub fn verify_modulus_signature(pgp_signed_modulus: &str) -> Result<Vec<u8>> {
 
     // Extract base64 modulus from the cleartext body.
     // Strip any whitespace since base64::STANDARD is strict.
-    let b64: String = signed_msg.text().chars().filter(|c| !c.is_whitespace()).collect();
+    let b64: String = signed_msg
+        .text()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
 
     STANDARD
         .decode(&b64)

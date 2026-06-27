@@ -3,11 +3,11 @@
 //! Provides utilities for walking local directories and computing file hashes
 //! for comparison with remote drive state.
 
+use crate::{Error, Result};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
-use sha2::{Sha256, Digest};
-use crate::{Error, Result};
 
 /// A node in the local filesystem tree.
 #[derive(Debug, Clone)]
@@ -22,13 +22,23 @@ pub struct LocalNode {
 impl LocalNode {
     /// Create a new LocalNode from a path.
     pub async fn from_path(path: PathBuf) -> Result<Self> {
-        let metadata = fs::metadata(&path).await
-            .map_err(|e| Error::Io(format!("Failed to read metadata for {}: {}", path.display(), e)))?;
+        let metadata = fs::metadata(&path).await.map_err(|e| {
+            Error::Io(format!(
+                "Failed to read metadata for {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
 
         let is_file = metadata.is_file();
         let size = metadata.len();
-        let modified_time = metadata.modified()
-            .map_err(|e| Error::Io(format!("Failed to read modified time for {}: {}", path.display(), e)))?;
+        let modified_time = metadata.modified().map_err(|e| {
+            Error::Io(format!(
+                "Failed to read modified time for {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
 
         let hash = if is_file {
             Some(compute_file_hash(&path).await?)
@@ -47,22 +57,32 @@ impl LocalNode {
 
     /// Get the relative path from a base directory.
     pub fn relative_path(&self, base: &Path) -> Result<PathBuf> {
-        self.path.strip_prefix(base)
+        self.path
+            .strip_prefix(base)
             .map(|p| p.to_path_buf())
-            .map_err(|_| Error::Io(format!("Path {} is not under base {}", self.path.display(), base.display())))
+            .map_err(|_| {
+                Error::Io(format!(
+                    "Path {} is not under base {}",
+                    self.path.display(),
+                    base.display()
+                ))
+            })
     }
 }
 
 /// Compute SHA256 hash of a file.
 async fn compute_file_hash(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path).await
+    let mut file = fs::File::open(path)
+        .await
         .map_err(|e| Error::Io(format!("Failed to open file {}: {}", path.display(), e)))?;
 
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
 
     loop {
-        let n = file.read(&mut buffer).await
+        let n = file
+            .read(&mut buffer)
+            .await
             .map_err(|e| Error::Io(format!("Failed to read file {}: {}", path.display(), e)))?;
         if n == 0 {
             break;
@@ -93,12 +113,17 @@ impl LocalClient {
 
     /// Recursively walk a directory.
     async fn walk_recursive(&self, dir: &Path, nodes: &mut Vec<LocalNode>) -> Result<()> {
-        let mut entries = fs::read_dir(dir).await
+        let mut entries = fs::read_dir(dir)
+            .await
             .map_err(|e| Error::Io(format!("Failed to read directory {}: {}", dir.display(), e)))?;
 
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| Error::Io(format!("Failed to read directory entry in {}: {}", dir.display(), e)))? {
-
+        while let Some(entry) = entries.next_entry().await.map_err(|e| {
+            Error::Io(format!(
+                "Failed to read directory entry in {}: {}",
+                dir.display(),
+                e
+            ))
+        })? {
             let path = entry.path();
             let node = LocalNode::from_path(path.clone()).await?;
             let is_dir = !node.is_file;
@@ -213,7 +238,11 @@ mod tests {
         let dirs: Vec<_> = nodes.iter().filter(|n| !n.is_file).collect();
         assert_eq!(dirs.len(), 2);
         for node in &dirs {
-            assert!(node.hash.is_none(), "dir {:?} should not have hash", node.path);
+            assert!(
+                node.hash.is_none(),
+                "dir {:?} should not have hash",
+                node.path
+            );
         }
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -227,7 +256,10 @@ mod tests {
         let nodes = client.walk_all().await.unwrap();
         // sub directory + child.txt
         assert_eq!(nodes.len(), 2);
-        let child = nodes.iter().find(|n| n.path.ends_with("child.txt")).unwrap();
+        let child = nodes
+            .iter()
+            .find(|n| n.path.ends_with("child.txt"))
+            .unwrap();
         let rel = child.relative_path(&dir).unwrap();
         assert_eq!(rel, PathBuf::from("sub/child.txt"));
 

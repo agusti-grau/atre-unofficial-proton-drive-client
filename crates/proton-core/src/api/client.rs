@@ -1,11 +1,11 @@
 use std::sync::Mutex;
 
-use reqwest::{Client, header, StatusCode};
+use reqwest::{header, Client, StatusCode};
 
-use crate::{Error, Result};
-use crate::api::types::*;
-use crate::api::drive_types::*;
 use crate::api::drive_types::RenameLinkReq;
+use crate::api::drive_types::*;
+use crate::api::types::*;
+use crate::{Error, Result};
 
 /// Default Proton API base URL.
 const BASE_URL: &str = "https://mail.proton.me/api";
@@ -83,7 +83,10 @@ impl ApiClient {
 
         let parsed: AuthInfoResponse = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed)
     }
@@ -101,7 +104,10 @@ impl ApiClient {
 
         let parsed: AuthResponse = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed)
     }
@@ -109,12 +115,17 @@ impl ApiClient {
     /// `POST /auth/v4/2fa` — submit a TOTP code after the main auth step.
     pub async fn submit_2fa(&self, code: &str) -> Result<()> {
         let session = self.require_session()?;
-        let req = TwoFactorRequest { code: code.to_string() };
+        let req = TwoFactorRequest {
+            code: code.to_string(),
+        };
 
         let text = self
             .client
             .post(format!("{}/auth/v4/2fa", self.base_url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", session.access_token))
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", session.access_token),
+            )
             .header("x-pm-uid", &session.uid)
             .json(&req)
             .send()
@@ -125,7 +136,10 @@ impl ApiClient {
         let v: serde_json::Value = serde_json::from_str(&text)?;
         let api_code = v["Code"].as_i64().unwrap_or(0) as i32;
         if api_code != 1000 {
-            return Err(Error::Api { code: api_code, message: text });
+            return Err(Error::Api {
+                code: api_code,
+                message: text,
+            });
         }
         Ok(())
     }
@@ -153,7 +167,10 @@ impl ApiClient {
 
         let parsed: AuthResponse = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed)
     }
@@ -164,7 +181,10 @@ impl ApiClient {
         let resp = self
             .client
             .delete(format!("{}/auth/v4", self.base_url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", session.access_token))
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", session.access_token),
+            )
             .header("x-pm-uid", &session.uid)
             .send()
             .await?;
@@ -173,7 +193,7 @@ impl ApiClient {
         if resp.status() == StatusCode::UNAUTHORIZED {
             return Ok(());
         }
-        resp.error_for_status().map_err(|e| Error::Http(e))?;
+        resp.error_for_status().map_err(Error::Http)?;
         Ok(())
     }
 
@@ -183,12 +203,18 @@ impl ApiClient {
     pub async fn list_volumes(&self) -> Result<Vec<Volume>> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, volumes: Vec<Volume> }
+        struct Resp {
+            code: i32,
+            volumes: Vec<Volume>,
+        }
 
         let text = self.authed_get("/drive/volumes").await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.volumes)
     }
@@ -197,12 +223,18 @@ impl ApiClient {
     pub async fn list_shares(&self) -> Result<Vec<ShareMetadata>> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, shares: Vec<ShareMetadata> }
+        struct Resp {
+            code: i32,
+            shares: Vec<ShareMetadata>,
+        }
 
         let text = self.authed_get("/drive/shares?ShowAll=1").await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.shares)
     }
@@ -211,12 +243,20 @@ impl ApiClient {
     pub async fn get_share(&self, share_id: &str) -> Result<Share> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, share: Share }
+        struct Resp {
+            code: i32,
+            share: Share,
+        }
 
-        let text = self.authed_get(&format!("/drive/shares/{share_id}")).await?;
+        let text = self
+            .authed_get(&format!("/drive/shares/{share_id}"))
+            .await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.share)
     }
@@ -225,14 +265,20 @@ impl ApiClient {
     pub async fn get_link(&self, share_id: &str, link_id: &str) -> Result<Link> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, link: Link }
+        struct Resp {
+            code: i32,
+            link: Link,
+        }
 
         let text = self
             .authed_get(&format!("/drive/shares/{share_id}/links/{link_id}"))
             .await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.link)
     }
@@ -251,7 +297,10 @@ impl ApiClient {
     ) -> Result<Vec<Link>> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, links: Vec<Link> }
+        struct Resp {
+            code: i32,
+            links: Vec<Link>,
+        }
 
         let url = format!(
             "/drive/shares/{share_id}/folders/{folder_link_id}/children\
@@ -260,7 +309,10 @@ impl ApiClient {
         let text = self.authed_get(&url).await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.links)
     }
@@ -276,7 +328,10 @@ impl ApiClient {
     ) -> Result<Revision> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, revision: Revision }
+        struct Resp {
+            code: i32,
+            revision: Revision,
+        }
 
         let text = self
             .authed_get(&format!(
@@ -285,26 +340,28 @@ impl ApiClient {
             .await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.revision)
     }
 
     /// Download a raw block from a pre-signed URL (no auth needed).
     pub async fn download_block(&self, url: &str) -> Result<Vec<u8>> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| Error::Http(e))?;
-        Ok(resp.bytes().await.map_err(|e| Error::Http(e))?.to_vec())
+        let resp = self.client.get(url).send().await.map_err(Error::Http)?;
+        Ok(resp.bytes().await.map_err(Error::Http)?.to_vec())
     }
 
     // ── Upload endpoints ───────────────────────────────────────────────────
 
     /// `POST /drive/shares/{shareID}/links` — create a file or folder.
-    pub async fn create_link(&self, share_id: &str, body: &impl serde::Serialize) -> Result<String> {
+    pub async fn create_link(
+        &self,
+        share_id: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<String> {
         let text = self
             .authed(&format!("/drive/shares/{share_id}/links"), "POST", body)
             .await?;
@@ -317,7 +374,10 @@ impl ApiClient {
         }
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.id)
     }
@@ -345,7 +405,10 @@ impl ApiClient {
             .await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.revision)
     }
@@ -359,7 +422,7 @@ impl ApiClient {
             .body(data.to_vec())
             .send()
             .await
-            .map_err(|e| Error::Http(e))?;
+            .map_err(Error::Http)?;
         Ok(())
     }
 
@@ -368,17 +431,29 @@ impl ApiClient {
     /// Updates the encrypted name (and optionally NodeKey/NodePassphrase for folders).
     /// The request body must contain at minimum the new encrypted `Name` and the
     /// `SignatureAddress`.
-    pub async fn rename_link(&self, share_id: &str, link_id: &str, body: &RenameLinkReq) -> Result<()> {
+    pub async fn rename_link(
+        &self,
+        share_id: &str,
+        link_id: &str,
+        body: &RenameLinkReq,
+    ) -> Result<()> {
         #[derive(serde::Deserialize)]
-        struct Resp { code: i32 }
-        let text = self.authed(
-            &format!("/drive/shares/{share_id}/links/{link_id}"),
-            "PUT",
-            body,
-        ).await?;
+        struct Resp {
+            code: i32,
+        }
+        let text = self
+            .authed(
+                &format!("/drive/shares/{share_id}/links/{link_id}"),
+                "PUT",
+                body,
+            )
+            .await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(())
     }
@@ -393,10 +468,15 @@ impl ApiClient {
             )
             .await?;
         #[derive(serde::Deserialize)]
-        struct Resp { code: i32 }
+        struct Resp {
+            code: i32,
+        }
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(())
     }
@@ -416,16 +496,17 @@ impl ApiClient {
         }
         let text = self
             .authed(
-                &format!(
-                    "/drive/shares/{share_id}/links/{link_id}/revisions/{revision_id}/state"
-                ),
+                &format!("/drive/shares/{share_id}/links/{link_id}/revisions/{revision_id}/state"),
                 "PUT",
                 &body,
             )
             .await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(())
     }
@@ -439,8 +520,8 @@ impl ApiClient {
     ) -> Result<String> {
         let session = self.require_session()?;
         let url = format!("{}{path}", self.base_url);
-        let json = serde_json::to_vec(body)
-            .map_err(|e| Error::Io(format!("serialize body: {e}")))?;
+        let json =
+            serde_json::to_vec(body).map_err(|e| Error::Io(format!("serialize body: {e}")))?;
 
         let req = self
             .client
@@ -455,9 +536,9 @@ impl ApiClient {
             .header("Content-Type", "application/json;charset=utf-8")
             .body(json);
 
-        let resp = req.send().await.map_err(|e| Error::Http(e))?;
+        let resp = req.send().await.map_err(Error::Http)?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| Error::Http(e))?;
+        let text = resp.text().await.map_err(Error::Http)?;
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
             // Token expired — refresh and retry once.
@@ -478,8 +559,8 @@ impl ApiClient {
     ) -> Result<String> {
         let session = self.require_session()?;
         let url = format!("{}{path}", self.base_url);
-        let json = serde_json::to_vec(body)
-            .map_err(|e| Error::Io(format!("serialize body: {e}")))?;
+        let json =
+            serde_json::to_vec(body).map_err(|e| Error::Io(format!("serialize body: {e}")))?;
 
         let resp = self
             .client
@@ -495,8 +576,8 @@ impl ApiClient {
             .body(json)
             .send()
             .await
-            .map_err(|e| Error::Http(e))?;
-        let text = resp.text().await.map_err(|e| Error::Http(e))?;
+            .map_err(Error::Http)?;
+        let text = resp.text().await.map_err(Error::Http)?;
         Ok(text)
     }
 
@@ -506,12 +587,18 @@ impl ApiClient {
     pub async fn get_addresses(&self) -> Result<Vec<Address>> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, addresses: Vec<Address> }
+        struct Resp {
+            code: i32,
+            addresses: Vec<Address>,
+        }
 
         let text = self.authed_get("/core/v4/addresses").await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.addresses)
     }
@@ -520,12 +607,18 @@ impl ApiClient {
     pub async fn get_key_salts(&self) -> Result<Vec<KeySalt>> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "PascalCase")]
-        struct Resp { code: i32, key_salts: Vec<KeySalt> }
+        struct Resp {
+            code: i32,
+            key_salts: Vec<KeySalt>,
+        }
 
         let text = self.authed_get("/core/v4/keys/salts").await?;
         let parsed: Resp = serde_json::from_str(&text)?;
         if parsed.code != 1000 {
-            return Err(Error::Api { code: parsed.code, message: text });
+            return Err(Error::Api {
+                code: parsed.code,
+                message: text,
+            });
         }
         Ok(parsed.key_salts)
     }
@@ -540,7 +633,10 @@ impl ApiClient {
         let resp = self
             .client
             .get(format!("{}{path}", self.base_url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", session.access_token))
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", session.access_token),
+            )
             .header("x-pm-uid", &session.uid)
             .send()
             .await?;
@@ -559,7 +655,10 @@ impl ApiClient {
         let resp = self
             .client
             .get(format!("{}{path}", self.base_url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", new_session.access_token))
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", new_session.access_token),
+            )
             .header("x-pm-uid", &new_session.uid)
             .send()
             .await?;
@@ -588,9 +687,9 @@ impl ApiClient {
         };
 
         // Persist the updated tokens so they survive process restart.
-        crate::keyring::save_session(&new_session).await.map_err(|e| {
-            Error::Keyring(format!("failed to persist refreshed session: {e}"))
-        })?;
+        crate::keyring::save_session(&new_session)
+            .await
+            .map_err(|e| Error::Keyring(format!("failed to persist refreshed session: {e}")))?;
 
         let mut guard = self.session.lock().unwrap();
         *guard = Some(new_session.clone());

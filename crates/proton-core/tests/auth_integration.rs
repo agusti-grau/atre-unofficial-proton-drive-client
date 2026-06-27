@@ -30,8 +30,8 @@
 //!     cargo test --test auth_integration -- --ignored
 //! ```
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use proton_core::auth::{password, srp};
-use base64::{Engine, engine::general_purpose::STANDARD};
 
 // ── go-srp reference values ────────────────────────────────────────────────
 
@@ -103,7 +103,10 @@ fn srp_proof_structure_with_gostrp_inputs() {
     let bcrypt_out = password::hash_password(GOSTRP_PASSWORD, GOSTRP_SALT_B64).unwrap();
 
     // Decode B — strip newlines that may be in the const string.
-    let b64_clean: String = GOSTRP_SERVER_EPHEMERAL_B64.chars().filter(|c| !c.is_whitespace()).collect();
+    let b64_clean: String = GOSTRP_SERVER_EPHEMERAL_B64
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     let b_bytes = STANDARD.decode(&b64_clean).unwrap();
     // Re-encode cleanly for the function.
     let b_b64 = STANDARD.encode(&b_bytes);

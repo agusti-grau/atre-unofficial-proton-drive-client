@@ -75,9 +75,9 @@ pub struct TwoFactorRequest {
 pub struct RefreshRequest {
     pub uid: String,
     pub refresh_token: String,
-    pub grant_type: String,     // "refresh_token"
-    pub redirect_uri: String,   // "https://proton.me"
-    pub response_type: String,  // "token"
+    pub grant_type: String,    // "refresh_token"
+    pub redirect_uri: String,  // "https://proton.me"
+    pub response_type: String, // "token"
 }
 
 // ── Address keys ──────────────────────────────────────────────────────────

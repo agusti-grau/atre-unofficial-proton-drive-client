@@ -2,7 +2,7 @@
 
 A native CLI, GUI, and background daemon for Linux that provides two-way synchronisation with [Proton Drive](https://proton.me/drive). Built in Rust.
 
-> **Status: All major features implemented — authentication, PGP key chain, two-way sync, daemon IPC, GUI, inotify watching, conflict resolution, bandwidth throttle, packaging, and i18n are working. Transfer manager with time-window scheduling is the remaining item.**
+> **Status: Feature-complete — authentication, PGP key chain, two-way sync, daemon IPC, GUI, inotify watching, conflict resolution, bandwidth throttle, transfer scheduling, pause/resume, packaging, and i18n are working.**
 
 ---
 
@@ -76,7 +76,8 @@ crates/
 | System tray icon (`--features tray`) | ✅ |
 | Systemd user unit | ✅ |
 | .deb / AppImage / Flatpak packaging | ✅ |
-| Transfer manager with time-window scheduling | 🔲 |
+| Transfer manager with time-window scheduling | ✅ |
+| Pause/resume transfers (CLI + GUI) | ✅ |
 | Parallel block download/upload (×4 concurrency) | ✅ |
 | E2E mock tests (wiremock) | ✅ |
 | Tracing (structured logging, env-filter) | ✅ |
@@ -150,6 +151,12 @@ proton-drive ls -r --decrypt      # recursive walk with real names
 # Sync and status
 proton-drive status               # show logged-in user, DB node counts, last sync time
 proton-drive sync                 # run full two-way sync (downloads + uploads)
+proton-drive pause                # pause all background transfers and sync
+proton-drive resume               # resume background transfers and sync
+
+# Transfer schedule
+proton-drive transfer             # show current transfer schedule
+proton-drive transfer '{"windows":[{"days":["Mon","Tue","Wed","Thu","Fri"],"start":"02:00","end":"06:00"}]}'
 ```
 
 ### 3. GUI
@@ -219,9 +226,9 @@ Credentials are stored exclusively in the **system keyring** (libsecret / GNOME 
 | 2 | Enumerate remote tree, decrypt file names with PGP key chain | ✅ |
 | 3 | Enumerate local sync folder (walk + SHA-256 hash) | ✅ |
 | 4 | Diff remote vs local vs last-known state (SQLite) | ✅ |
-| 5 | Resolve conflicts — pause and notify user | 🔲 |
+| 5 | Resolve conflicts — pause and notify user | ✅ |
 | 6 | Build prioritised job queue (persisted to SQLite) | ✅ |
-| 7 | Transfer blocks with encryption/decryption | ✅ |
+| 7 | Transfer blocks with encryption/decryption (respects schedule + pause) | ✅ |
 
 ---
 
@@ -303,7 +310,8 @@ key password  ──unlocks──►  address private key
 - [x] Conflict resolution (GUI + CLI)
 - [x] System tray icon (optional `tray` feature)
 - [x] Systemd user unit for auto-start
-- [ ] Transfer manager with time-window scheduling
+- [x] Transfer manager with time-window scheduling
+- [x] Pause/resume transfers (CLI + GUI)
 - [x] Packaging (`.deb`, AppImage, Flatpak)
 - [x] E2E mock tests (wiremock)
 - [x] Parallel block download/upload (×4 concurrency)

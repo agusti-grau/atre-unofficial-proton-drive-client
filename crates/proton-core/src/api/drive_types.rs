@@ -254,8 +254,8 @@ impl Link {
     }
 
     pub fn is_active(&self) -> bool {
-        self.link_type == LinkType::Folder && self.state == LinkState::Active
-            || self.link_type == LinkType::File && self.state == LinkState::Active
+        self.state == LinkState::Active
+            && (self.link_type == LinkType::Folder || self.link_type == LinkType::File)
     }
 }
 

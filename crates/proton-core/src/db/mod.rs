@@ -85,16 +85,16 @@ pub struct StateDb {
 impl StateDb {
     /// Open (or create) the database at `dir/state.db`.
     pub fn open(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir).map_err(|e| {
-            Error::Io(format!("create db directory {}: {e}", dir.display()))
-        })?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::Io(format!("create db directory {}: {e}", dir.display())))?;
 
         let path = dir.join("state.db");
-        let conn = Connection::open(&path).map_err(|e| {
-        Error::Db(format!("open {}: {e}", path.display()))
-    })?;
+        let conn = Connection::open(&path)
+            .map_err(|e| Error::Db(format!("open {}: {e}", path.display())))?;
 
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -246,7 +246,9 @@ impl StateDb {
             ("SELECT id, local_path, link_id, share_id, name_encrypted, size, modified_time, hash, is_file, state, created_at, updated_at FROM nodes WHERE state = ?1 ORDER BY local_path", vec![&state as &dyn rusqlite::types::ToSql])
         };
 
-        let mut stmt = conn.prepare(sql).map_err(|e| Error::Db(format!("prepare list_nodes: {e}")))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| Error::Db(format!("prepare list_nodes: {e}")))?;
         let rows = stmt
             .query_map(params.as_slice(), row_to_node)
             .map_err(|e| Error::Db(format!("query list_nodes: {e}")))?;
@@ -263,7 +265,10 @@ impl StateDb {
         let conn = self.conn.lock().unwrap();
         let path_s = path_to_string(local_path);
         let n = conn
-            .execute("DELETE FROM nodes WHERE local_path = ?1", rusqlite::params![path_s])
+            .execute(
+                "DELETE FROM nodes WHERE local_path = ?1",
+                rusqlite::params![path_s],
+            )
             .map_err(|e| Error::Db(format!("delete_node: {e}")))?;
         Ok(n > 0)
     }
@@ -274,7 +279,10 @@ impl StateDb {
         let (sql, params): (&str, Vec<&dyn rusqlite::types::ToSql>) = if state.is_empty() {
             ("SELECT COUNT(*) FROM nodes", vec![])
         } else {
-            ("SELECT COUNT(*) FROM nodes WHERE state = ?1", vec![&state as &dyn rusqlite::types::ToSql])
+            (
+                "SELECT COUNT(*) FROM nodes WHERE state = ?1",
+                vec![&state as &dyn rusqlite::types::ToSql],
+            )
         };
         conn.query_row(sql, params.as_slice(), |row| row.get(0))
             .map_err(|e| Error::Db(format!("count_nodes: {e}")))
@@ -324,7 +332,11 @@ impl StateDb {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO jobs (job_type, local_path, link_id) VALUES (?1, ?2, ?3)",
-            rusqlite::params![fields.job_type, path_to_string(&fields.local_path), fields.link_id],
+            rusqlite::params![
+                fields.job_type,
+                path_to_string(&fields.local_path),
+                fields.link_id
+            ],
         )
         .map_err(|e| Error::Db(format!("enqueue_job: {e}")))?;
 
@@ -442,7 +454,9 @@ fn dirs_data_home() -> Option<PathBuf> {
             return Some(PathBuf::from(dir));
         }
     }
-    std::env::var("HOME").ok().map(|home| PathBuf::from(home).join(".local/share"))
+    std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".local/share"))
 }
 
 #[cfg(test)]
@@ -580,7 +594,11 @@ mod tests {
                 modified_time: 0,
                 hash: None,
                 is_file: true,
-                state: if i == 0 { "synced".into() } else { "pending".into() },
+                state: if i == 0 {
+                    "synced".into()
+                } else {
+                    "pending".into()
+                },
             })
             .unwrap();
         }

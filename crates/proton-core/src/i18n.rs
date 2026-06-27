@@ -33,6 +33,7 @@ fn translations() -> &'static Translations {
         en.insert("status.not_logged_in", "Not logged in");
         en.insert("status.db_status", "DB: {total} total nodes ({synced} synced, {pending} pending)");
         en.insert("status.last_sync", "Last sync: {time}");
+        en.insert("status.paused", "Transfers are paused.");
         en.insert("sync.downloading", "Downloading {path}");
         en.insert("sync.uploading", "Uploading {path}");
         en.insert("sync.completed", "Sync completed");
@@ -70,6 +71,10 @@ fn translations() -> &'static Translations {
         en.insert("transfer.no_schedule", "No transfer schedule configured — transfers are unrestricted.");
         en.insert("transfer.schedule", "Transfer schedule:");
         en.insert("transfer.config_updated", "Transfer schedule updated.");
+        en.insert("pause.success", "Transfers paused.");
+        en.insert("pause.button", "Pause");
+        en.insert("resume.success", "Transfers resumed.");
+        en.insert("resume.button", "Resume");
         en.insert("general.error", "Error: {message}");
         en.insert("onboarding.welcome", "Welcome to Proton Drive");
         en.insert("onboarding.tagline", "End-to-end encrypted cloud storage for Linux");
@@ -106,6 +111,7 @@ fn translations() -> &'static Translations {
         ca.insert("status.not_logged_in", "No has iniciat sessió");
         ca.insert("status.db_status", "BD: {total} nodes totals ({synced} sincronitzats, {pending} pendents)");
         ca.insert("status.last_sync", "Darrera sincronització: {time}");
+        ca.insert("status.paused", "Les transferències estan en pausa.");
         ca.insert("sync.downloading", "Baixant {path}");
         ca.insert("sync.uploading", "Pujant {path}");
         ca.insert("sync.completed", "Sincronització completada");
@@ -143,6 +149,10 @@ fn translations() -> &'static Translations {
         ca.insert("transfer.no_schedule", "No hi ha horari de transferència configurat — les transferències són il·limitades.");
         ca.insert("transfer.schedule", "Horari de transferència:");
         ca.insert("transfer.config_updated", "Horari de transferència actualitzat.");
+        ca.insert("pause.success", "Transferències pausades.");
+        ca.insert("pause.button", "Pausa");
+        ca.insert("resume.success", "Transferències reprises.");
+        ca.insert("resume.button", "Reprèn");
         ca.insert("general.error", "Error: {message}");
         ca.insert("onboarding.welcome", "Benvingut/da a Proton Drive");
         ca.insert("onboarding.tagline", "Emmagatzematge al núvol xifrat d'extrem a extrem per a Linux");

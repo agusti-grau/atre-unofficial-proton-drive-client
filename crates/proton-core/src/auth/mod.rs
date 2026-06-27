@@ -5,8 +5,8 @@
 pub mod password;
 pub mod srp;
 
-use crate::api::{ApiClient, Session};
 use crate::api::types::AuthRequest;
+use crate::api::{ApiClient, Session};
 use crate::crypto;
 use crate::{Error, Result};
 
@@ -50,11 +50,7 @@ pub async fn login(username: &str, password: &str) -> Result<LoginResult> {
     let modulus_bytes = crypto::verify_modulus_signature(&info.modulus)?;
 
     // ── Step 4: Compute SRP-6a proofs ─────────────────────────────────────
-    let proof = srp::generate_srp_proof(
-        &bcrypt_output,
-        &modulus_bytes,
-        &info.server_ephemeral,
-    )?;
+    let proof = srp::generate_srp_proof(&bcrypt_output, &modulus_bytes, &info.server_ephemeral)?;
 
     // ── Step 5: Submit proof ───────────────────────────────────────────────
     let auth_req = AuthRequest {

@@ -148,10 +148,7 @@ async fn background_loop(
 }
 
 /// Background loop that periodically refreshes the auth token.
-async fn token_refresh_loop(
-    handler: Arc<handler::IpcHandler>,
-    cancel: CancellationToken,
-) {
+async fn token_refresh_loop(handler: Arc<handler::IpcHandler>, cancel: CancellationToken) {
     let mut timer = tokio::time::interval(TOKEN_REFRESH_INTERVAL);
     timer.tick().await;
 

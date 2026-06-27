@@ -34,6 +34,31 @@ Sync the local drive with the remote (requires protond).
 .B resolve [OPTIONS] [PATH]
 List or resolve conflicts.
 \fB--strategy\fR \fIstrategy\fR  Resolution strategy: local, remote, rename_local.
+.TP
+.B mkdir NAME
+Create a remote folder.
+\fB--share-id\fR \fIid\fR        Parent share ID.
+\fB--parent-link-id\fR \fIid\fR  Parent folder link ID.
+\fB--password\fR \fIpw\fR        Decryption password.
+.TP
+.B rename --share-id ID --link-id ID --new-name NAME
+Rename a remote file or folder.
+\fB--password\fR \fIpw\fR        Decryption password.
+.TP
+.B rm --share-id ID --link-id ID
+Delete a remote file or folder.
+.TP
+.B transfer [CONFIG]
+Show or configure the transfer schedule.
+CONFIG is a JSON object with a "windows" array of time windows.
+Each window has optional "days" (e.g. ["Mon","Tue"]) and
+required "start" and "end" times in HH:MM format.
+.TP
+.B pause
+Pause all background transfers and sync.
+.TP
+.B resume
+Resume background transfers and sync.
 .SH FILES
 .TP
 .I ~/.local/share/proton-drive/

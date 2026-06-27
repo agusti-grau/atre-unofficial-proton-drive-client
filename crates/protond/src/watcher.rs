@@ -15,14 +15,11 @@ const DEBOUNCE_MS: u64 = 100;
 /// Start watching `base_path` and send a notification on `sync_tx`
 /// whenever files change.  Events are debounced so rapid sequences
 /// produce at most one trigger per `DEBOUNCE_MS` window.
-pub fn spawn(
-    base_path: PathBuf,
-    sync_tx: mpsc::Sender<()>,
-) -> Result<(), String> {
+pub fn spawn(base_path: PathBuf, sync_tx: mpsc::Sender<()>) -> Result<(), String> {
     let mut last_trigger = std::time::Instant::now();
 
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        match res {
+    let mut watcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
             Ok(event) => {
                 tracing::trace!("inotify event: {:?}", event.kind);
                 let now = std::time::Instant::now();
@@ -34,9 +31,8 @@ pub fn spawn(
             Err(e) => {
                 tracing::warn!("watcher error: {e}");
             }
-        }
-    })
-    .map_err(|e| format!("create watcher: {e}"))?;
+        })
+        .map_err(|e| format!("create watcher: {e}"))?;
 
     watcher
         .watch(&base_path, RecursiveMode::Recursive)

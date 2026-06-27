@@ -25,8 +25,8 @@ pub mod keyring;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::ApiClient;
 use crate::api::drive_types::{Link, LinkState, LinkType, VolumeState};
+use crate::api::ApiClient;
 use crate::drive::keyring::{derive_key_password, DriveKeyring};
 use crate::{Error, Result};
 
@@ -177,12 +177,7 @@ impl DriveClient {
     ///
     /// Calls `visitor` for every node encountered (files and folders).
     /// Traversal is depth-first.
-    pub async fn walk<F>(
-        &self,
-        share_id: &str,
-        folder_link_id: &str,
-        visitor: &mut F,
-    ) -> Result<()>
+    pub async fn walk<F>(&self, share_id: &str, folder_link_id: &str, visitor: &mut F) -> Result<()>
     where
         F: FnMut(&DriveNode),
     {
@@ -216,7 +211,10 @@ impl DriveClient {
     ///
     /// Fetches addresses, key salts, and the full share in order to bootstrap
     /// the key chain.
-    pub async fn build_keyring(&self, user_password: &str) -> Result<(DriveKeyring, String, String)> {
+    pub async fn build_keyring(
+        &self,
+        user_password: &str,
+    ) -> Result<(DriveKeyring, String, String)> {
         let (share_id, root_link_id) = self.find_main_share().await?;
 
         // Fetch full share (contains encrypted key + passphrase + address_key_id).
@@ -348,14 +346,8 @@ impl DriveClient {
                         continue;
                     }
 
-                    self.walk_decrypted_inner(
-                        share_id,
-                        &node.link_id,
-                        &node.link_id,
-                        kr,
-                        visitor,
-                    )
-                    .await?;
+                    self.walk_decrypted_inner(share_id, &node.link_id, &node.link_id, kr, visitor)
+                        .await?;
                 }
             }
             Ok(())

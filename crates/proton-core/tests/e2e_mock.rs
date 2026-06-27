@@ -8,13 +8,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use wiremock::{Mock, MockServer, ResponseTemplate};
 use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use proton_core::api::{ApiClient, Session};
 use proton_core::api::drive_types::{
     BlockEntry, CreateFolderReq, CreateRevisionReq, LinkState, LinkType,
 };
+use proton_core::api::{ApiClient, Session};
 use proton_core::crypto::{
     create_content_key_packet, encrypt_block, generate_node_keypair, generate_session_key,
     pgp_encrypt,
@@ -60,15 +60,20 @@ async fn mock_api_auth_info_returns_valid_params() {
         .mount(&mock_server)
         .await;
 
-    let client = ApiClient::with_base_url(&mock_server.uri())
-        .expect("ApiClient::with_base_url");
-    let info = client.get_auth_info("testuser").await.expect("get_auth_info");
+    let client = ApiClient::with_base_url(&mock_server.uri()).expect("ApiClient::with_base_url");
+    let info = client
+        .get_auth_info("testuser")
+        .await
+        .expect("get_auth_info");
 
     assert_eq!(info.code, 1000, "API response code must be 1000");
     assert_eq!(info.version, 4, "auth version must be 4");
     assert_eq!(info.srp_session, "mock-srp-session-42");
     assert!(!info.modulus.is_empty(), "modulus must be present");
-    assert!(!info.server_ephemeral.is_empty(), "server ephemeral must be present");
+    assert!(
+        !info.server_ephemeral.is_empty(),
+        "server ephemeral must be present"
+    );
     assert!(!info.salt.is_empty(), "salt must be present");
 }
 
@@ -105,7 +110,10 @@ async fn mock_api_create_folder() {
         signature_address: "testuser@proton.me".into(),
     };
 
-    let created_id = client.create_link(share_id, &req).await.expect("create_link");
+    let created_id = client
+        .create_link(share_id, &req)
+        .await
+        .expect("create_link");
     assert_eq!(created_id, expected_link_id, "returned link ID must match");
 }
 
@@ -257,9 +265,7 @@ async fn mock_sync_engine_download() {
         }
     });
 
-    let rev_path = format!(
-        "/drive/shares/{share_id}/links/{node_link_id}/revisions/{revision_id}"
-    );
+    let rev_path = format!("/drive/shares/{share_id}/links/{node_link_id}/revisions/{revision_id}");
     Mock::given(method("GET"))
         .and(path(&rev_path))
         .respond_with(ResponseTemplate::new(200).set_body_json(revision_response))
@@ -269,10 +275,7 @@ async fn mock_sync_engine_download() {
     // 3. GET {block_url} — raw encrypted block data
     Mock::given(method("GET"))
         .and(path("/blocks/test-block-0"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(encrypted_block.clone()),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(encrypted_block.clone()))
         .mount(&mock_server)
         .await;
 
@@ -382,7 +385,10 @@ async fn mock_sync_engine_upload() {
     assert_eq!(rev.id, revision_id);
     assert_eq!(rev.block_list.len(), 1);
     assert_eq!(rev.block_list[0].index, 0);
-    assert!(!rev.block_list[0].url.is_empty(), "upload URL must be present");
+    assert!(
+        !rev.block_list[0].url.is_empty(),
+        "upload URL must be present"
+    );
 
     // ── 2. Upload block (PUT pre-signed URL) ───────────────────────────────
 

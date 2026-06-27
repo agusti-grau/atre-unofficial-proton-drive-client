@@ -57,6 +57,10 @@ enum Commands {
         /// JSON config with time windows, or omit to show current config.
         config: Option<String>,
     },
+    /// Pause all background transfers and sync.
+    Pause,
+    /// Resume background transfers and sync.
+    Resume,
     /// Create a remote folder.
     Mkdir {
         /// Name of the new folder.
@@ -132,12 +136,26 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Auth { action } => handle_auth(action).await,
-        Commands::Ls { recursive, decrypt, .. } => cmd_ls(recursive, decrypt).await,
+        Commands::Ls {
+            recursive, decrypt, ..
+        } => cmd_ls(recursive, decrypt).await,
         Commands::Status => cmd_status().await,
         Commands::Sync => cmd_sync().await,
         Commands::Transfer { config } => cmd_transfer(config).await,
-        Commands::Mkdir { name, share_id, parent_link_id, password } => cmd_mkdir(name, share_id, parent_link_id, password).await,
-        Commands::Rename { share_id, link_id, new_name, password } => cmd_rename(share_id, link_id, new_name, password).await,
+        Commands::Pause => cmd_pause().await,
+        Commands::Resume => cmd_resume().await,
+        Commands::Mkdir {
+            name,
+            share_id,
+            parent_link_id,
+            password,
+        } => cmd_mkdir(name, share_id, parent_link_id, password).await,
+        Commands::Rename {
+            share_id,
+            link_id,
+            new_name,
+            password,
+        } => cmd_rename(share_id, link_id, new_name, password).await,
         Commands::Rm { share_id, link_id } => cmd_rm(share_id, link_id).await,
         Commands::Resolve { path, strategy } => cmd_resolve(path, strategy).await,
     }
@@ -195,10 +213,16 @@ async fn cmd_ls(recursive: bool, decrypt: bool) -> Result<()> {
             let kind = if node.is_folder() { "DIR " } else { "FILE" };
             println!("{kind}  {}", node.display_name());
         }
-        println!("\n{} item(s) total — use --decrypt to show real names", nodes.len());
+        println!(
+            "\n{} item(s) total — use --decrypt to show real names",
+            nodes.len()
+        );
     } else {
         println!("Fetching root folder…");
-        let nodes = drive.list_root().await.context("Failed to list drive root")?;
+        let nodes = drive
+            .list_root()
+            .await
+            .context("Failed to list drive root")?;
         for node in &nodes {
             let kind = if node.is_folder() { "DIR " } else { "FILE" };
             let size = if node.is_file() {
@@ -208,7 +232,10 @@ async fn cmd_ls(recursive: bool, decrypt: bool) -> Result<()> {
             };
             println!("{kind}{size}  {}", node.display_name());
         }
-        println!("\n{} item(s) — use --decrypt to show real names", nodes.len());
+        println!(
+            "\n{} item(s) — use --decrypt to show real names",
+            nodes.len()
+        );
     }
 
     Ok(())
@@ -218,7 +245,7 @@ async fn cmd_ls(recursive: bool, decrypt: bool) -> Result<()> {
 
 async fn handle_auth(action: AuthCommands) -> Result<()> {
     match action {
-        AuthCommands::Login  => cmd_login().await,
+        AuthCommands::Login => cmd_login().await,
         AuthCommands::Logout => cmd_logout().await,
         AuthCommands::Status => cmd_auth_status().await,
     }
@@ -227,8 +254,7 @@ async fn handle_auth(action: AuthCommands) -> Result<()> {
 async fn cmd_login() -> Result<()> {
     // Prompt for credentials interactively.
     let username = prompt("Proton account (email or username): ")?;
-    let password = rpassword::prompt_password("Password: ")
-        .context("Failed to read password")?;
+    let password = rpassword::prompt_password("Password: ").context("Failed to read password")?;
 
     println!("Authenticating…");
 
@@ -238,7 +264,9 @@ async fn cmd_login() -> Result<()> {
 
     match result {
         LoginResult::Success(session) => {
-            keyring::save_session(&session).await.context("Failed to save session to keyring")?;
+            keyring::save_session(&session)
+                .await
+                .context("Failed to save session to keyring")?;
             println!("{}", t!("status.logged_in", username = &session.username));
         }
         LoginResult::TwoFactorRequired(client) => {
@@ -246,8 +274,13 @@ async fn cmd_login() -> Result<()> {
             let session = auth::complete_2fa(&client, code.trim())
                 .await
                 .context("2FA failed")?;
-            keyring::save_session(&session).await.context("Failed to save session to keyring")?;
-            println!("{} (2FA verified).", t!("status.logged_in", username = &session.username));
+            keyring::save_session(&session)
+                .await
+                .context("Failed to save session to keyring")?;
+            println!(
+                "{} (2FA verified).",
+                t!("status.logged_in", username = &session.username)
+            );
         }
     }
 
@@ -255,7 +288,10 @@ async fn cmd_login() -> Result<()> {
 }
 
 async fn cmd_logout() -> Result<()> {
-    match keyring::load_session().await.context("Failed to read keyring")? {
+    match keyring::load_session()
+        .await
+        .context("Failed to read keyring")?
+    {
         None => {
             println!("{}", t!("status.not_logged_in"));
         }
@@ -269,8 +305,11 @@ async fn cmd_logout() -> Result<()> {
 }
 
 async fn cmd_auth_status() -> Result<()> {
-    match keyring::load_session().await.context("Failed to read keyring")? {
-        None    => println!("{}", t!("status.not_logged_in")),
+    match keyring::load_session()
+        .await
+        .context("Failed to read keyring")?
+    {
+        None => println!("{}", t!("status.not_logged_in")),
         Some(s) => println!("{}", t!("status.logged_in", username = &s.username)),
     }
     Ok(())
@@ -292,8 +331,8 @@ async fn cmd_sync() -> Result<()> {
     }
 
     if let Some(result) = resp.result {
-        let report: SyncReport = serde_json::from_value(result)
-            .context("failed to parse sync report")?;
+        let report: SyncReport =
+            serde_json::from_value(result).context("failed to parse sync report")?;
 
         if !report.errors.is_empty() {
             println!("{}", t!("sync.errors", count = report.errors.len()));
@@ -305,11 +344,19 @@ async fn cmd_sync() -> Result<()> {
 
         println!(
             "{}",
-            t!("sync.downloads", attempted = report.downloads_attempted, succeeded = report.downloads_succeeded)
+            t!(
+                "sync.downloads",
+                attempted = report.downloads_attempted,
+                succeeded = report.downloads_succeeded
+            )
         );
         println!(
             "{}",
-            t!("sync.uploads", attempted = report.uploads_attempted, succeeded = report.uploads_succeeded)
+            t!(
+                "sync.uploads",
+                attempted = report.uploads_attempted,
+                succeeded = report.uploads_succeeded
+            )
         );
         println!("{}", t!("sync.dirs_created", count = report.dirs_created));
     }
@@ -318,16 +365,24 @@ async fn cmd_sync() -> Result<()> {
 
 async fn cmd_status() -> Result<()> {
     let mut client = IpcClient::connect().await?;
-    let resp = client.request("drive.status", serde_json::json!({})).await?;
+    let resp = client
+        .request("drive.status", serde_json::json!({}))
+        .await?;
 
     if let Some(err) = resp.error {
         anyhow::bail!("status failed: {}", err.message);
     }
 
     if let Some(result) = resp.result {
-        let logged_in = result.get("logged_in").and_then(|v| v.as_bool()).unwrap_or(false);
+        let logged_in = result
+            .get("logged_in")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if logged_in {
-            let username = result.get("username").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let username = result
+                .get("username")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             println!("{}", t!("status.logged_in", username = username));
 
             if let Some(db) = result.get("db") {
@@ -336,7 +391,12 @@ async fn cmd_status() -> Result<()> {
                 let pending = db.get("pending").and_then(|v| v.as_i64()).unwrap_or(0);
                 println!(
                     "{}",
-                    t!("status.db_status", total = total, synced = synced, pending = pending)
+                    t!(
+                        "status.db_status",
+                        total = total,
+                        synced = synced,
+                        pending = pending
+                    )
                 );
             }
 
@@ -345,6 +405,18 @@ async fn cmd_status() -> Result<()> {
                     println!("{}", t!("status.last_sync", time = last_sync));
                 }
             }
+
+            let paused = result
+                .get("paused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if paused {
+                println!("{}", t!("status.paused"));
+            }
+
+            if let Some(status) = result.get("transfer_status").and_then(|v| v.as_str()) {
+                println!("{status}");
+            }
         } else {
             println!("{}", t!("status.not_logged_in"));
         }
@@ -352,7 +424,29 @@ async fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-// ── Transfer schedule ──────────────────────────────────────────────────────
+// ── Transfer schedule / pause ──────────────────────────────────────────────
+
+async fn cmd_pause() -> Result<()> {
+    let mut client = IpcClient::connect().await?;
+    let resp = client.request("drive.pause", serde_json::json!({})).await?;
+    if let Some(err) = resp.error {
+        anyhow::bail!("pause failed: {}", err.message);
+    }
+    println!("{}", t!("pause.success"));
+    Ok(())
+}
+
+async fn cmd_resume() -> Result<()> {
+    let mut client = IpcClient::connect().await?;
+    let resp = client
+        .request("drive.resume", serde_json::json!({}))
+        .await?;
+    if let Some(err) = resp.error {
+        anyhow::bail!("resume failed: {}", err.message);
+    }
+    println!("{}", t!("resume.success"));
+    Ok(())
+}
 
 async fn cmd_transfer(config: Option<String>) -> Result<()> {
     let mut client = IpcClient::connect().await?;
@@ -362,9 +456,7 @@ async fn cmd_transfer(config: Option<String>) -> Result<()> {
             // SET config.
             let params: serde_json::Value =
                 serde_json::from_str(&json_str).context("Invalid JSON config")?;
-            let resp = client
-                .request("transfer.config", params)
-                .await?;
+            let resp = client.request("transfer.config", params).await?;
             if let Some(err) = resp.error {
                 anyhow::bail!("transfer config failed: {}", err.message);
             }
@@ -417,14 +509,8 @@ async fn cmd_transfer(config: Option<String>) -> Result<()> {
                                             .join(", ")
                                     })
                                     .unwrap_or_else(|| "*".into());
-                                let start = w
-                                    .get("start")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("?");
-                                let end = w
-                                    .get("end")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("?");
+                                let start = w.get("start").and_then(|v| v.as_str()).unwrap_or("?");
+                                let end = w.get("end").and_then(|v| v.as_str()).unwrap_or("?");
                                 println!("  {days}: {start} → {end}");
                             }
                         }
@@ -439,7 +525,12 @@ async fn cmd_transfer(config: Option<String>) -> Result<()> {
 
 // ── Mkdir ──────────────────────────────────────────────────────────────────
 
-async fn cmd_mkdir(name: String, share_id: Option<String>, parent_link_id: Option<String>, password: Option<String>) -> Result<()> {
+async fn cmd_mkdir(
+    name: String,
+    share_id: Option<String>,
+    parent_link_id: Option<String>,
+    password: Option<String>,
+) -> Result<()> {
     let password = match password {
         Some(p) => p,
         None => rpassword::prompt_password("Password (for key decryption): ")
@@ -465,7 +556,10 @@ async fn cmd_mkdir(name: String, share_id: Option<String>, parent_link_id: Optio
     }
 
     if let Some(result) = resp.result {
-        let link_id = result.get("link_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let link_id = result
+            .get("link_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         println!("{}", t!("create_folder.success", name = &name));
         println!("  link_id: {link_id}");
     }
@@ -474,7 +568,12 @@ async fn cmd_mkdir(name: String, share_id: Option<String>, parent_link_id: Optio
 
 // ── Rename ─────────────────────────────────────────────────────────────────
 
-async fn cmd_rename(share_id: String, link_id: String, new_name: String, password: Option<String>) -> Result<()> {
+async fn cmd_rename(
+    share_id: String,
+    link_id: String,
+    new_name: String,
+    password: Option<String>,
+) -> Result<()> {
     let password = match password {
         Some(p) => p,
         None => rpassword::prompt_password("Password (for key decryption): ")
@@ -507,10 +606,13 @@ async fn cmd_rename(share_id: String, link_id: String, new_name: String, passwor
 async fn cmd_rm(share_id: String, link_id: String) -> Result<()> {
     let mut client = IpcClient::connect().await?;
     let resp = client
-        .request("drive.delete", serde_json::json!({
-            "share_id": share_id,
-            "link_id": link_id,
-        }))
+        .request(
+            "drive.delete",
+            serde_json::json!({
+                "share_id": share_id,
+                "link_id": link_id,
+            }),
+        )
         .await?;
 
     if let Some(err) = resp.error {
@@ -529,18 +631,27 @@ async fn cmd_resolve(path: Option<String>, strategy: Option<String>) -> Result<(
     match (path, strategy) {
         (None, _) => {
             // List all conflicts.
-            let resp = client.request("drive.conflicts", serde_json::json!({})).await?;
+            let resp = client
+                .request("drive.conflicts", serde_json::json!({}))
+                .await?;
             if let Some(err) = resp.error {
                 anyhow::bail!("list conflicts failed: {}", err.message);
             }
             if let Some(result) = resp.result {
-                let items = result.get("items").and_then(|v| v.as_array()).map(|a| a.clone()).unwrap_or_default();
+                let items = result
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 if items.is_empty() {
                     println!("{}", t!("conflict.no_conflicts"));
                 } else {
                     println!("Conflicts:");
                     for item in &items {
-                        let lp = item.get("local_path").and_then(|v| v.as_str()).unwrap_or("?");
+                        let lp = item
+                            .get("local_path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
                         println!("  {lp}");
                     }
                     println!("\nResolve with: proton-drive resolve <path> --strategy <local|remote|rename_local>");
@@ -551,17 +662,29 @@ async fn cmd_resolve(path: Option<String>, strategy: Option<String>) -> Result<(
             let password = rpassword::prompt_password("Password (for key decryption): ")
                 .context("Failed to read password")?;
 
-            let resp = client.request("drive.resolve", serde_json::json!({
-                "local_path": local_path,
-                "strategy": strategy,
-                "password": password,
-            })).await?;
+            let resp = client
+                .request(
+                    "drive.resolve",
+                    serde_json::json!({
+                        "local_path": local_path,
+                        "strategy": strategy,
+                        "password": password,
+                    }),
+                )
+                .await?;
 
             if let Some(err) = resp.error {
                 anyhow::bail!("resolve failed: {}", err.message);
             }
 
-            println!("{}", t!("conflict.resolved", strategy = &strategy, path = &local_path));
+            println!(
+                "{}",
+                t!(
+                    "conflict.resolved",
+                    strategy = &strategy,
+                    path = &local_path
+                )
+            );
         }
         (Some(_), None) => {
             anyhow::bail!("--strategy is required when specifying a path. Use --strategy local, --strategy remote, or --strategy rename_local");

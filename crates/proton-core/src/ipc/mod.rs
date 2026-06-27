@@ -75,14 +75,21 @@ pub struct IpcError {
 
 impl IpcResponse {
     pub fn ok(id: RequestId, result: serde_json::Value) -> Self {
-        Self { id, result: Some(result), error: None }
+        Self {
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     pub fn err(id: RequestId, code: i32, message: impl Into<String>) -> Self {
         Self {
             id,
             result: None,
-            error: Some(IpcError { code, message: message.into() }),
+            error: Some(IpcError {
+                code,
+                message: message.into(),
+            }),
         }
     }
 }
@@ -125,7 +132,11 @@ impl IpcClient {
     }
 
     /// Send a request and await the response.
-    pub async fn request(&mut self, method: &str, params: serde_json::Value) -> Result<IpcResponse> {
+    pub async fn request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<IpcResponse> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -135,8 +146,8 @@ impl IpcClient {
             params,
         };
 
-        let mut buf = serde_json::to_vec(&req)
-            .map_err(|e| Error::Io(format!("serialize request: {e}")))?;
+        let mut buf =
+            serde_json::to_vec(&req).map_err(|e| Error::Io(format!("serialize request: {e}")))?;
         buf.push(b'\n');
 
         self.writer
@@ -154,7 +165,6 @@ impl IpcClient {
             return Err(Error::Io("protond closed connection".into()));
         }
 
-        serde_json::from_str(&line)
-            .map_err(|e| Error::Io(format!("parse response: {e}")))
+        serde_json::from_str(&line).map_err(|e| Error::Io(format!("parse response: {e}")))
     }
 }

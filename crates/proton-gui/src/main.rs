@@ -10,7 +10,9 @@ use proton_core::{
     api::Session,
     drive::{keyring::DriveKeyring, DriveClient, DriveNode},
     ipc::{socket_path, IpcClient},
-    keyring, sync::SyncReport, t,
+    keyring,
+    sync::SyncReport,
+    t,
 };
 
 #[cfg(feature = "tray")]
@@ -69,6 +71,7 @@ struct ProtonDrive {
     state: State,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum State {
     Loading,
     Onboarding(OnboardingData),
@@ -113,6 +116,8 @@ struct BrowseData {
     sync_error: Option<String>,
     confirm_delete: Option<(String, String, String)>, // (share_id, link_id, name)
     uploading: bool,
+    paused: bool,
+    transfer_status: String,
 }
 struct FileEntry {
     node: DriveNode,
@@ -130,6 +135,8 @@ struct SyncStatusInfo {
     last_sync: Option<String>,
     last_report: Option<SyncReport>,
     error: Option<String>,
+    paused: bool,
+    transfer_status: String,
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -190,6 +197,12 @@ enum Message {
     // Sync status
     SyncStatusTick,
     SyncStatusUpdated(SyncStatusInfo),
+
+    // Pause / resume
+    PausePressed,
+    ResumePressed,
+    PauseDone(Result<(), String>),
+    ResumeDone(Result<(), String>),
 }
 
 // ── Application impl ────────────────────────────────────────────────────────
@@ -243,6 +256,8 @@ impl Application for ProtonDrive {
                             sync_error: None,
                             confirm_delete: None,
                             uploading: false,
+                            paused: false,
+                            transfer_status: String::new(),
                         });
                         self.state = state;
                         return fetch_conflicts();
@@ -492,22 +507,23 @@ impl Application for ProtonDrive {
                 } else {
                     String::new()
                 };
-                return Command::perform(
+                Command::perform(
                     resolve_conflict_async(local_path, strategy, password),
                     Message::ResolveDone,
-                );
+                )
             }
             Message::ResolveDone(path) => {
                 if !path.is_empty() {
                     // Re-fetch conflicts.
-                    return fetch_conflicts();
+                    fetch_conflicts()
+                } else {
+                    Command::none()
                 }
-                Command::none()
             }
 
             // ── Sync status ────────────────────────────────────────
             Message::SyncStatusTick => {
-                return Command::perform(fetch_sync_status(), Message::SyncStatusUpdated);
+                Command::perform(fetch_sync_status(), Message::SyncStatusUpdated)
             }
             Message::SyncStatusUpdated(info) => {
                 if let State::Browse(ref mut d) = self.state {
@@ -516,25 +532,57 @@ impl Application for ProtonDrive {
                     d.last_sync = info.last_sync;
                     d.last_report = info.last_report;
                     d.sync_error = info.error;
+                    d.paused = info.paused;
+                    d.transfer_status = info.transfer_status;
 
                     // Show notification when sync transitions from syncing to idle.
                     if was_syncing && d.sync_state == "idle" {
                         if let Some(ref report) = d.last_report {
-                            let (summary, body) = if report.errors.is_empty() && report.downloads_attempted + report.uploads_attempted > 0 {
-                                (t!("sync.completed").to_string(),
-                                 format!("↓ {}↑ {}📁 {}",
-                                    t!("sync.downloads", attempted = report.downloads_attempted, succeeded = report.downloads_succeeded),
-                                    t!("sync.uploads", attempted = report.uploads_attempted, succeeded = report.uploads_succeeded),
-                                    t!("sync.dirs_created", count = report.dirs_created),
-                                ))
+                            let (summary, body) = if report.errors.is_empty()
+                                && report.downloads_attempted + report.uploads_attempted > 0
+                            {
+                                (
+                                    t!("sync.completed").to_string(),
+                                    format!(
+                                        "↓ {}↑ {}📁 {}",
+                                        t!(
+                                            "sync.downloads",
+                                            attempted = report.downloads_attempted,
+                                            succeeded = report.downloads_succeeded
+                                        ),
+                                        t!(
+                                            "sync.uploads",
+                                            attempted = report.uploads_attempted,
+                                            succeeded = report.uploads_succeeded
+                                        ),
+                                        t!("sync.dirs_created", count = report.dirs_created),
+                                    ),
+                                )
                             } else if !report.errors.is_empty() {
-                                (t!("sync.errors", count = report.errors.len()).to_string(),
-                                 format!("↓ {}↑ {}",
-                                    t!("sync.downloads", attempted = report.downloads_attempted, succeeded = report.downloads_succeeded),
-                                    t!("sync.uploads", attempted = report.uploads_attempted, succeeded = report.uploads_succeeded),
-                                ))
+                                (
+                                    t!("sync.errors", count = report.errors.len()).to_string(),
+                                    format!(
+                                        "↓ {}↑ {}",
+                                        t!(
+                                            "sync.downloads",
+                                            attempted = report.downloads_attempted,
+                                            succeeded = report.downloads_succeeded
+                                        ),
+                                        t!(
+                                            "sync.uploads",
+                                            attempted = report.uploads_attempted,
+                                            succeeded = report.uploads_succeeded
+                                        ),
+                                    ),
+                                )
                             } else {
-                                ("Proton Drive Sync".into(), t!("sync.status_idle_at", time = d.last_sync.as_deref().unwrap_or("?")).into())
+                                (
+                                    "Proton Drive Sync".into(),
+                                    t!(
+                                        "sync.status_idle_at",
+                                        time = d.last_sync.as_deref().unwrap_or("?")
+                                    ),
+                                )
                             };
                             let _ = Notification::new()
                                 .summary(&summary)
@@ -547,6 +595,28 @@ impl Application for ProtonDrive {
                     }
                 }
                 Command::none()
+            }
+
+            // ── Pause / resume ───────────────────────────────────────
+            Message::PausePressed => Command::perform(pause_async(), Message::PauseDone),
+            Message::ResumePressed => Command::perform(resume_async(), Message::ResumeDone),
+            Message::PauseDone(result) => {
+                if let State::Browse(ref mut d) = self.state {
+                    match result {
+                        Ok(()) => d.paused = true,
+                        Err(e) => d.error = Some(e),
+                    }
+                }
+                Command::perform(fetch_sync_status(), Message::SyncStatusUpdated)
+            }
+            Message::ResumeDone(result) => {
+                if let State::Browse(ref mut d) = self.state {
+                    match result {
+                        Ok(()) => d.paused = false,
+                        Err(e) => d.error = Some(e),
+                    }
+                }
+                Command::perform(fetch_sync_status(), Message::SyncStatusUpdated)
             }
 
             // ── Create folder ────────────────────────────────────────
@@ -759,9 +829,7 @@ impl Application for ProtonDrive {
             }
 
             // ── Logout ──────────────────────────────────────────────
-            Message::LogoutPressed => {
-                return Command::perform(logout_async(), |_| Message::LogoutDone);
-            }
+            Message::LogoutPressed => Command::perform(logout_async(), |_| Message::LogoutDone),
             Message::LogoutDone => {
                 self.state = State::Login(LoginData {
                     username: String::new(),
@@ -841,7 +909,9 @@ async fn check_auth() -> Option<Result<Session, String>> {
                     Err(e) => last_err = e,
                 }
             }
-            return Some(Err(format!("Cannot connect to daemon after multiple attempts: {last_err}")));
+            return Some(Err(format!(
+                "Cannot connect to daemon after multiple attempts: {last_err}"
+            )));
         }
     };
 
@@ -871,7 +941,9 @@ fn spawn_daemon() {
     }
 
     // Search in multiple locations: next to our binary, in PATH, and common build dirs.
-    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
 
     let builtin = [
         "protond",
@@ -1026,7 +1098,12 @@ async fn resolve_conflict_async(local_path: String, strategy: String, password: 
     }
 }
 
-async fn create_folder_async(share_id: String, parent_link_id: String, folder_name: String, password: String) -> Result<String, String> {
+async fn create_folder_async(
+    share_id: String,
+    parent_link_id: String,
+    folder_name: String,
+    password: String,
+) -> Result<String, String> {
     let result = ipc_request(
         "drive.create_folder",
         serde_json::json!({
@@ -1037,11 +1114,20 @@ async fn create_folder_async(share_id: String, parent_link_id: String, folder_na
         }),
     )
     .await?;
-    let link_id = result.get("link_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+    let link_id = result
+        .get("link_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
     Ok(link_id)
 }
 
-async fn rename_async(share_id: String, link_id: String, new_name: String, password: String) -> Result<(), String> {
+async fn rename_async(
+    share_id: String,
+    link_id: String,
+    new_name: String,
+    password: String,
+) -> Result<(), String> {
     ipc_request(
         "drive.rename",
         serde_json::json!({
@@ -1064,7 +1150,11 @@ async fn delete_async(share_id: String, link_id: String) -> Result<(), String> {
     Ok(())
 }
 
-async fn upload_async(password: String, share_id: String, parent_link_id: String) -> Result<String, String> {
+async fn upload_async(
+    password: String,
+    share_id: String,
+    parent_link_id: String,
+) -> Result<String, String> {
     let file = rfd::AsyncFileDialog::new()
         .set_title("Select a file to upload")
         .pick_file()
@@ -1084,7 +1174,11 @@ async fn upload_async(password: String, share_id: String, parent_link_id: String
         }),
     )
     .await?;
-    let link_id = result.get("link_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+    let link_id = result
+        .get("link_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
     Ok(link_id)
 }
 
@@ -1096,25 +1190,51 @@ async fn fetch_sync_status() -> SyncStatusInfo {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let last_sync = v.get("last_sync").and_then(|v| v.as_str()).map(String::from);
-            let last_report = v
-                .get("last_report")
-                .and_then(|v| {
-                    if v.is_null() {
-                        None
-                    } else {
-                        serde_json::from_value(v.clone()).ok()
-                    }
-                });
-            SyncStatusInfo { state, last_sync, last_report, error: None }
+            let last_sync = v
+                .get("last_sync")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let last_report = v.get("last_report").and_then(|v| {
+                if v.is_null() {
+                    None
+                } else {
+                    serde_json::from_value(v.clone()).ok()
+                }
+            });
+            let paused = v.get("paused").and_then(|v| v.as_bool()).unwrap_or(false);
+            let transfer_status = v
+                .get("transfer_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            SyncStatusInfo {
+                state,
+                last_sync,
+                last_report,
+                error: None,
+                paused,
+                transfer_status,
+            }
         }
         Err(e) => SyncStatusInfo {
             state: "unknown".into(),
             last_sync: None,
             last_report: None,
             error: Some(e),
+            paused: false,
+            transfer_status: String::new(),
         },
     }
+}
+
+async fn pause_async() -> Result<(), String> {
+    ipc_request("drive.pause", serde_json::json!({})).await?;
+    Ok(())
+}
+
+async fn resume_async() -> Result<(), String> {
+    ipc_request("drive.resume", serde_json::json!({})).await?;
+    Ok(())
 }
 
 async fn fetch_children_async(
@@ -1292,19 +1412,41 @@ fn browse_view(data: &BrowseData) -> Element<'_, Message> {
             }
         }
     };
+    if data.paused {
+        status_text = format!("{status_text} — ⏸ {}", t!("status.paused"));
+    } else if !data.transfer_status.is_empty()
+        && data.transfer_status != "Transfers are unrestricted."
+    {
+        status_text = format!("{status_text} — {}", data.transfer_status);
+    }
     if let Some(ref report) = data.last_report {
         if !report.errors.is_empty() {
-            status_text = format!("{status_text} — ⚠ {}", t!("sync.errors", count = report.errors.len()));
+            status_text = format!(
+                "{status_text} — ⚠ {}",
+                t!("sync.errors", count = report.errors.len())
+            );
         }
     }
     let status_color = match data.sync_state.as_str() {
         "syncing" => iced::Color::from_rgb(0.3, 0.7, 1.0),
         _ => iced::Color::from_rgb(0.5, 0.5, 0.5),
     };
+
+    let pause_btn = if data.paused {
+        button(text(t!("resume.button"))).on_press(Message::ResumePressed)
+    } else {
+        button(text(t!("pause.button"))).on_press(Message::PausePressed)
+    };
     col = col.push(
-        container(text(status_text).size(12).style(status_color))
-            .padding([4, 8])
-            .width(Length::Fill),
+        container(
+            Row::new()
+                .spacing(8)
+                .align_items(iced::Alignment::Center)
+                .push(text(status_text).size(12).style(status_color))
+                .push(pause_btn),
+        )
+        .padding([4, 8])
+        .width(Length::Fill),
     );
 
     // Decryption prompt (if keyring not built yet)
@@ -1369,14 +1511,16 @@ fn browse_view(data: &BrowseData) -> Element<'_, Message> {
                         .on_submit(Message::NewFolderConfirmed)
                         .width(250),
                 )
-                .push(button(text(t!("create_folder.create"))).on_press(Message::NewFolderConfirmed))
-                .push(button(text(t!("create_folder.cancel"))).on_press(Message::NewFolderCancelled));
+                .push(
+                    button(text(t!("create_folder.create"))).on_press(Message::NewFolderConfirmed),
+                )
+                .push(
+                    button(text(t!("create_folder.cancel"))).on_press(Message::NewFolderCancelled),
+                );
             col = col.push(nf_row);
         } else {
-            col = col.push(
-                button(text(t!("create_folder.new")))
-                    .on_press(Message::NewFolderPressed)
-            );
+            col =
+                col.push(button(text(t!("create_folder.new"))).on_press(Message::NewFolderPressed));
         }
         col = col.push(Space(Length::Fixed(0.0), Length::Fixed(4.0)));
     }
@@ -1465,14 +1609,8 @@ fn browse_view(data: &BrowseData) -> Element<'_, Message> {
                     .on_submit(Message::RenameConfirmed)
                     .width(250),
             )
-            .push(
-                button(text(t!("rename.rename")))
-                    .on_press(Message::RenameConfirmed),
-            )
-            .push(
-                button(text(t!("rename.cancel")))
-                    .on_press(Message::RenameCancelled),
-            );
+            .push(button(text(t!("rename.rename"))).on_press(Message::RenameConfirmed))
+            .push(button(text(t!("rename.cancel"))).on_press(Message::RenameCancelled));
         col = col.push(rename_row);
     }
 
@@ -1492,26 +1630,36 @@ fn browse_view(data: &BrowseData) -> Element<'_, Message> {
                     .on_press(Message::DeleteConfirmed)
                     .style(iced::theme::Button::Destructive),
             )
-            .push(
-                button(text(t!("delete.cancel")))
-                    .on_press(Message::DeleteCancelled),
-            );
+            .push(button(text(t!("delete.cancel"))).on_press(Message::DeleteCancelled));
         col = col.push(confirm_row);
     }
 
     if data.deleting {
-        col = col.push(text("Deleting...").size(12).style(iced::Color::from_rgb(1.0, 0.8, 0.2)));
+        col = col.push(
+            text("Deleting...")
+                .size(12)
+                .style(iced::Color::from_rgb(1.0, 0.8, 0.2)),
+        );
     }
 
     // Sync report
     if let Some(ref report) = data.last_report {
-        if report.downloads_attempted > 0 || report.uploads_attempted > 0 || report.dirs_created > 0 {
+        if report.downloads_attempted > 0 || report.uploads_attempted > 0 || report.dirs_created > 0
+        {
             col = col.push(Space(Length::Fixed(0.0), Length::Fixed(4.0)));
             col = col.push(
                 text(format!(
                     "↓ {}↑ {}📁 {}",
-                    t!("sync.downloads", attempted = report.downloads_attempted, succeeded = report.downloads_succeeded),
-                    t!("sync.uploads", attempted = report.uploads_attempted, succeeded = report.uploads_succeeded),
+                    t!(
+                        "sync.downloads",
+                        attempted = report.downloads_attempted,
+                        succeeded = report.downloads_succeeded
+                    ),
+                    t!(
+                        "sync.uploads",
+                        attempted = report.uploads_attempted,
+                        succeeded = report.uploads_succeeded
+                    ),
                     t!("sync.dirs_created", count = report.dirs_created),
                 ))
                 .size(11)
@@ -1526,7 +1674,11 @@ fn browse_view(data: &BrowseData) -> Element<'_, Message> {
                     .size(12),
             );
             for err in report.errors.iter().take(3) {
-                col = col.push(text(err).size(11).style(iced::Color::from_rgb(0.8, 0.3, 0.3)));
+                col = col.push(
+                    text(err)
+                        .size(11)
+                        .style(iced::Color::from_rgb(0.8, 0.3, 0.3)),
+                );
             }
         }
     }

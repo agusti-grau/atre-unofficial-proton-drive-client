@@ -26,8 +26,7 @@ impl Throttle {
         }
         let now = Instant::now();
         let elapsed = now.duration_since(self.last).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * self.bytes_per_sec)
-            .min(self.bytes_per_sec);
+        self.tokens = (self.tokens + elapsed * self.bytes_per_sec).min(self.bytes_per_sec);
         self.last = now;
 
         let needed = byte_count as f64;

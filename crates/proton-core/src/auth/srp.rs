@@ -15,11 +15,11 @@
 //!
 //! Reference: <https://github.com/ProtonMail/go-srp>
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use num_bigint::BigUint;
 use num_traits::Zero;
 use rand::RngCore;
 use sha2::{Digest, Sha512};
-use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::{Error, Result};
 
@@ -40,10 +40,10 @@ pub struct SrpProof {
 /// Compute SRP-6a client proofs for Proton's auth v4.
 ///
 /// # Arguments
-/// - `bcrypt_output`        — Full bcrypt output string as raw bytes
-///                            (from [`super::password::hash_password`]).
-/// - `modulus_bytes`        — Raw 256-byte big-endian prime N
-///                            (decoded from the PGP-signed modulus field).
+/// - `bcrypt_output` — Full bcrypt output string as raw bytes
+///   (from [`super::password::hash_password`]).
+/// - `modulus_bytes` — Raw 256-byte big-endian prime N
+///   (decoded from the PGP-signed modulus field).
 /// - `server_ephemeral_b64` — Base64-encoded server ephemeral B.
 pub fn generate_srp_proof(
     bcrypt_output: &[u8],
@@ -102,7 +102,7 @@ pub fn generate_srp_proof(
     };
 
     // S = (B − k·g^x mod N)^(a + u·x) mod N
-    let gx  = g.modpow(&x, &n);
+    let gx = g.modpow(&x, &n);
     let kgx = (&k * &gx) % &n;
     let diff = if b >= kgx {
         b - &kgx
@@ -110,7 +110,7 @@ pub fn generate_srp_proof(
         // Modular subtraction: (b − kgx) ≡ (b + N − kgx)  mod N
         b + &n - kgx
     };
-    let exp   = &a + &u * &x;
+    let exp = &a + &u * &x;
     let big_s = diff.modpow(&exp, &n);
 
     // K = expand_hash(S_padded)  — 256-byte session key
@@ -280,10 +280,10 @@ mod tests {
     // without requiring 2048-bit arithmetic in the test.
 
     fn srp_round_trip_with_prime(p: u64, x_val: u64) {
-        let n   = BigUint::from(p);
-        let g   = BigUint::from(2u64);
-        let a   = BigUint::from(5u64);  // client secret
-        let b   = BigUint::from(3u64);  // server secret
+        let n = BigUint::from(p);
+        let g = BigUint::from(2u64);
+        let a = BigUint::from(5u64); // client secret
+        let b = BigUint::from(3u64); // server secret
 
         // Fake k and u (just arbitrary small values for math verification)
         let k = BigUint::from(7u64);
@@ -299,7 +299,11 @@ mod tests {
         // Client S
         let gx = g.modpow(&x, &n);
         let kgx = (&k * &gx) % &n;
-        let diff = if big_b >= kgx { big_b.clone() - &kgx } else { big_b.clone() + &n - &kgx };
+        let diff = if big_b >= kgx {
+            big_b.clone() - &kgx
+        } else {
+            big_b.clone() + &n - &kgx
+        };
         let client_s = diff.modpow(&(&a + &u * &x), &n);
 
         // Server S = (A * v^u)^b mod N

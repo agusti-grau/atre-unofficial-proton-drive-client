@@ -1,18 +1,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use proton_core::api::ApiClient;
-use tracing; // ensure tracing is imported
-use proton_core::auth::{self, LoginResult};
-use proton_core::db::StateDb;
 use proton_core::api::drive_types::{CreateFolderReq, RenameLinkReq};
-use proton_core::crypto::{compute_name_hash, generate_hash_key, generate_node_keypair, pgp_decrypt, pgp_encrypt, pgp_sign};
+use proton_core::api::ApiClient;
+use proton_core::auth::{self, LoginResult};
+use proton_core::crypto::{
+    compute_name_hash, generate_hash_key, generate_node_keypair, pgp_decrypt, pgp_encrypt, pgp_sign,
+};
+use proton_core::db::StateDb;
 use proton_core::drive::keyring::derive_key_password;
 use proton_core::drive::DriveClient;
 use proton_core::ipc::{IpcRequest, IpcResponse};
 use proton_core::keyring;
 use proton_core::sync::{SyncEngine, SyncReport};
-use proton_core::transfer::TransferConfig;
+use proton_core::transfer::{TransferConfig, TransferManager};
 use tokio::sync::Mutex;
 
 /// Token bucket rate limiter — simple in-memory.
@@ -57,6 +58,7 @@ pub struct IpcHandler {
     rate_limiter: Mutex<TokenBucket>,
     sync_state: Mutex<SyncState>,
     last_report: Mutex<Option<SyncReport>>,
+    transfer_manager: Mutex<TransferManager>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,21 +70,32 @@ enum SyncState {
 impl IpcHandler {
     pub async fn new(db: Arc<StateDb>, base_path: PathBuf) -> Self {
         let api = match keyring::load_session().await {
-            Ok(Some(session)) => {
-                match ApiClient::new() {
-                    Ok(client) => Some(client.with_session(session)),
-                    Err(e) => {
-                        tracing::warn!("failed to create API client from saved session: {e}");
-                        None
-                    }
+            Ok(Some(session)) => match ApiClient::new() {
+                Ok(client) => Some(client.with_session(session)),
+                Err(e) => {
+                    tracing::warn!("failed to create API client from saved session: {e}");
+                    None
                 }
-            }
+            },
             Ok(None) => None,
             Err(e) => {
                 tracing::warn!("failed to load session from keyring: {e}");
                 None
             }
         };
+        let paused = db
+            .get_meta("sync.paused")
+            .ok()
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        let transfer_config = db
+            .get_meta("transfer.config")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<TransferConfig>(&s).ok())
+            .unwrap_or_default();
+        let transfer_manager = TransferManager::new(transfer_config, paused);
         Self {
             api: Mutex::new(api),
             pending_login: Mutex::new(None),
@@ -92,18 +105,26 @@ impl IpcHandler {
             rate_limiter: Mutex::new(TokenBucket::new(10, 10.0)), // 10 req/s
             sync_state: Mutex::new(SyncState::Idle),
             last_report: Mutex::new(None),
+            transfer_manager: Mutex::new(transfer_manager),
         }
     }
 
     pub async fn handle(&self, req: IpcRequest) -> IpcResponse {
         // Rate limit check for mutating drive operations.
         match req.method.as_str() {
-            "drive.sync" | "drive.ls" | "drive.ls_decrypted" | "drive.resolve" | "drive.delete" | "drive.rename" | "drive.create_folder" | "drive.upload_file" => {
+            "drive.sync"
+            | "drive.ls"
+            | "drive.ls_decrypted"
+            | "drive.resolve"
+            | "drive.delete"
+            | "drive.rename"
+            | "drive.create_folder"
+            | "drive.upload_file"
+            | "drive.pause"
+            | "drive.resume" => {
                 let mut limiter = self.rate_limiter.lock().await;
                 if !limiter.acquire() {
-                    return IpcResponse::err(
-                        req.id, -1, "Rate limit exceeded. Try again shortly.",
-                    );
+                    return IpcResponse::err(req.id, -1, "Rate limit exceeded. Try again shortly.");
                 }
                 drop(limiter);
             }
@@ -126,28 +147,28 @@ impl IpcHandler {
             "drive.rename" => self.handle_drive_rename(req).await,
             "drive.create_folder" => self.handle_drive_create_folder(req).await,
             "drive.upload_file" => self.handle_drive_upload_file(req).await,
+            "drive.pause" => self.handle_drive_pause(req).await,
+            "drive.resume" => self.handle_drive_resume(req).await,
             "transfer.config" => self.handle_transfer_config(req).await,
             _ => IpcResponse::err(req.id, -1, format!("unknown method: {}", req.method)),
         }
     }
 
-    /// Check if transfers are allowed by the current schedule.
+    /// Check if transfers are allowed right now (schedule + pause).
     pub async fn transfers_allowed(&self) -> bool {
-        let config = self
-            .db
-            .get_meta("transfer.config")
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str::<TransferConfig>(&s).ok())
-            .unwrap_or_default();
-        config.is_in_window()
+        self.transfer_manager.lock().await.can_transfer()
+    }
+
+    /// Returns a human-readable transfer status message.
+    pub async fn transfer_status(&self) -> String {
+        self.transfer_manager.lock().await.status_message()
     }
 
     /// Called by the background loop. Uses cached password if available.
     pub async fn trigger_sync(&self) {
-        // Respect transfer schedule.
-        if !self.transfers_allowed().await {
-            tracing::debug!("background sync skipped: outside transfer window");
+        // Respect transfer schedule and manual pause.
+        if let Err(reason) = self.transfer_manager.lock().await.check_transfer() {
+            tracing::debug!("background sync skipped: {reason:?}");
             return;
         }
 
@@ -185,7 +206,10 @@ impl IpcHandler {
                 let now = chrono::Utc::now().to_rfc3339();
                 let _ = self.db.set_meta("last_sync", &now);
                 if report.has_errors() {
-                    tracing::warn!("background sync completed with {} errors", report.errors.len());
+                    tracing::warn!(
+                        "background sync completed with {} errors",
+                        report.errors.len()
+                    );
                     for err in &report.errors {
                         tracing::error!("sync error: {err}");
                     }
@@ -236,15 +260,21 @@ impl IpcHandler {
         match &*api {
             Some(client) => {
                 let session = client.session();
-                IpcResponse::ok(req.id, serde_json::json!({
-                    "logged_in": true,
-                    "username": session.as_ref().map(|s| &s.username),
-                }))
+                IpcResponse::ok(
+                    req.id,
+                    serde_json::json!({
+                        "logged_in": true,
+                        "username": session.as_ref().map(|s| &s.username),
+                    }),
+                )
             }
-            None => IpcResponse::ok(req.id, serde_json::json!({
-                "logged_in": false,
-                "username": null,
-            })),
+            None => IpcResponse::ok(
+                req.id,
+                serde_json::json!({
+                    "logged_in": false,
+                    "username": null,
+                }),
+            ),
         }
     }
 
@@ -269,16 +299,22 @@ impl IpcHandler {
                 };
                 *self.api.lock().await = Some(client);
                 *self.pending_login.lock().await = None;
-                IpcResponse::ok(req.id, serde_json::json!({
-                    "status": "success",
-                    "username": username,
-                }))
+                IpcResponse::ok(
+                    req.id,
+                    serde_json::json!({
+                        "status": "success",
+                        "username": username,
+                    }),
+                )
             }
             Ok(LoginResult::TwoFactorRequired(client)) => {
                 *self.pending_login.lock().await = Some(client);
-                IpcResponse::ok(req.id, serde_json::json!({
-                    "status": "2fa_required",
-                }))
+                IpcResponse::ok(
+                    req.id,
+                    serde_json::json!({
+                        "status": "2fa_required",
+                    }),
+                )
             }
             Err(e) => IpcResponse::err(req.id, -1, format!("Login failed: {e}")),
         }
@@ -306,10 +342,13 @@ impl IpcHandler {
                     Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
                 };
                 *self.api.lock().await = Some(new_client);
-                IpcResponse::ok(req.id, serde_json::json!({
-                    "status": "success",
-                    "username": client.session().as_ref().map(|s| &s.username),
-                }))
+                IpcResponse::ok(
+                    req.id,
+                    serde_json::json!({
+                        "status": "success",
+                        "username": client.session().as_ref().map(|s| &s.username),
+                    }),
+                )
             }
             Err(e) => IpcResponse::err(req.id, -1, format!("2FA failed: {e}")),
         }
@@ -357,19 +396,28 @@ impl IpcHandler {
             SyncState::Syncing => "syncing",
         };
         let report_val = self.last_report.lock().await.clone();
-        IpcResponse::ok(req.id, serde_json::json!({
-            "logged_in": logged_in,
-            "username": username,
-            "db": {
-                "total_nodes": total,
-                "synced": synced,
-                "pending": pending,
-                "conflicts": conflicts,
-            },
-            "last_sync": last_sync,
-            "sync_state": state_str,
-            "last_report": report_val,
-        }))
+        let paused = self.transfer_manager.lock().await.is_paused();
+        let transfers_allowed = self.transfers_allowed().await;
+        let transfer_status = self.transfer_status().await;
+        IpcResponse::ok(
+            req.id,
+            serde_json::json!({
+                "logged_in": logged_in,
+                "username": username,
+                "db": {
+                    "total_nodes": total,
+                    "synced": synced,
+                    "pending": pending,
+                    "conflicts": conflicts,
+                },
+                "last_sync": last_sync,
+                "sync_state": state_str,
+                "last_report": report_val,
+                "paused": paused,
+                "transfers_allowed": transfers_allowed,
+                "transfer_status": transfer_status,
+            }),
+        )
     }
 
     async fn handle_drive_conflicts(&self, req: IpcRequest) -> IpcResponse {
@@ -464,7 +512,11 @@ impl IpcHandler {
                     Err(e) => return IpcResponse::err(req.id, -1, format!("build keyring: {e}")),
                 };
                 let mut engine = match ApiClient::new() {
-                    Ok(c) => SyncEngine::new(c.with_session(session.clone()), Arc::clone(&self.db), self.base_path.clone()),
+                    Ok(c) => SyncEngine::new(
+                        c.with_session(session.clone()),
+                        Arc::clone(&self.db),
+                        self.base_path.clone(),
+                    ),
                     Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
                 };
                 let all_nodes = match drive.walk_all().await {
@@ -476,7 +528,9 @@ impl IpcHandler {
                     None => return IpcResponse::err(req.id, -1, "Remote node not found"),
                 };
                 match engine.download_file(&node, &local_path, &kr).await {
-                    Ok(()) => IpcResponse::ok(req.id, serde_json::json!({ "status": "remote_wins" })),
+                    Ok(()) => {
+                        IpcResponse::ok(req.id, serde_json::json!({ "status": "remote_wins" }))
+                    }
                     Err(e) => IpcResponse::err(req.id, -1, format!("download: {e}")),
                 }
             }
@@ -522,7 +576,11 @@ impl IpcHandler {
             return IpcResponse::err(req.id, -1, "Not logged in");
         };
 
-        let recursive = req.params.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let recursive = req
+            .params
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let nodes = if recursive {
             match drive.walk_all().await {
@@ -542,8 +600,10 @@ impl IpcHandler {
             }
         };
 
-        let items: Vec<serde_json::Value> =
-            nodes.iter().map(|n| serde_json::to_value(n).unwrap_or_default()).collect();
+        let items: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|n| serde_json::to_value(n).unwrap_or_default())
+            .collect();
         IpcResponse::ok(req.id, serde_json::json!({ "items": items }))
     }
 
@@ -557,7 +617,11 @@ impl IpcHandler {
             return IpcResponse::err(req.id, -1, "Not logged in");
         };
 
-        let recursive = req.params.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let recursive = req
+            .params
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let items: Vec<serde_json::Value> = if recursive {
             match drive.walk_all_decrypted(password).await {
@@ -566,7 +630,10 @@ impl IpcHandler {
                     .map(|(node, plain_name)| {
                         let mut v = serde_json::to_value(node).unwrap_or_default();
                         if let Some(obj) = v.as_object_mut() {
-                            obj.insert("name".into(), serde_json::Value::String(plain_name.clone()));
+                            obj.insert(
+                                "name".into(),
+                                serde_json::Value::String(plain_name.clone()),
+                            );
                         }
                         v
                     })
@@ -638,6 +705,11 @@ impl IpcHandler {
             None => return IpcResponse::err(req.id, -1, "Not logged in"),
         };
 
+        // Respect manual pause and transfer schedule.
+        if let Err(reason) = self.transfer_manager.lock().await.check_transfer() {
+            return IpcResponse::err(req.id, -1, format!("transfer blocked: {reason:?}"));
+        }
+
         let api = match ApiClient::new() {
             Ok(c) => c.with_session(session),
             Err(e) => return IpcResponse::err(req.id, -1, format!("create client: {e}")),
@@ -698,7 +770,10 @@ impl IpcHandler {
             Ok(a) => a,
             Err(e) => return IpcResponse::err(req.id, -1, format!("get addresses: {e}")),
         };
-        let signature_address = addresses.first().map(|a| a.email.clone()).unwrap_or_default();
+        let signature_address = addresses
+            .first()
+            .map(|a| a.email.clone())
+            .unwrap_or_default();
 
         let link = match lookup_api.get_link(&share_id, &link_id).await {
             Ok(l) => l,
@@ -733,7 +808,10 @@ impl IpcHandler {
                 Err(e) => return IpcResponse::err(req.id, -1, format!("get parent link: {e}")),
             };
             drop(parent_lookup);
-            let grandparent_id = parent.parent_link_id.clone().unwrap_or_else(|| root_link_id.clone());
+            let grandparent_id = parent
+                .parent_link_id
+                .clone()
+                .unwrap_or_else(|| root_link_id.clone());
             if let Err(e) = kr.unlock_with_parent(
                 &parent_key_id,
                 &grandparent_id,
@@ -758,7 +836,10 @@ impl IpcHandler {
             .rename_link(
                 &share_id,
                 &link_id,
-                &RenameLinkReq { name: encrypted_name, signature_address },
+                &RenameLinkReq {
+                    name: encrypted_name,
+                    signature_address,
+                },
             )
             .await
         {
@@ -801,8 +882,18 @@ impl IpcHandler {
         };
         drop(drive_lookup);
 
-        let share_id = req.params.get("share_id").and_then(|v| v.as_str()).unwrap_or(&default_share_id).to_string();
-        let parent_link_id = req.params.get("parent_link_id").and_then(|v| v.as_str()).unwrap_or(&default_root_link_id).to_string();
+        let share_id = req
+            .params
+            .get("share_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&default_share_id)
+            .to_string();
+        let parent_link_id = req
+            .params
+            .get("parent_link_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&default_root_link_id)
+            .to_string();
 
         // Build keyring.
         let api = match ApiClient::new() {
@@ -836,7 +927,10 @@ impl IpcHandler {
 
         // Unlock the parent key if needed.
         if parent_link_id != root_link_id {
-            let grandparent_id = parent.parent_link_id.clone().unwrap_or_else(|| root_link_id.clone());
+            let grandparent_id = parent
+                .parent_link_id
+                .clone()
+                .unwrap_or_else(|| root_link_id.clone());
             if let Err(e) = kr.unlock_with_parent(
                 &parent_key_id,
                 &grandparent_id,
@@ -861,10 +955,7 @@ impl IpcHandler {
         };
 
         // Encrypt passphrase with parent's node key.
-        let enc_pass = match pgp_encrypt(
-            hex::encode(&node_pass).as_bytes(),
-            &parent.node_key,
-        ) {
+        let enc_pass = match pgp_encrypt(hex::encode(&node_pass).as_bytes(), &parent.node_key) {
             Ok(p) => p,
             Err(e) => return IpcResponse::err(req.id, -1, format!("encrypt passphrase: {e}")),
         };
@@ -878,7 +969,10 @@ impl IpcHandler {
             Ok(a) => a,
             Err(e) => return IpcResponse::err(req.id, -1, format!("get addresses: {e}")),
         };
-        let signature_address = addresses.first().map(|a| a.email.clone()).unwrap_or_default();
+        let signature_address = addresses
+            .first()
+            .map(|a| a.email.clone())
+            .unwrap_or_default();
         drop(addr_api);
 
         // Get address key for signing.
@@ -899,19 +993,21 @@ impl IpcHandler {
         };
 
         let (pass_sig, sig_addr) = match &address_key_info {
-            Some((priv_key, key_pass)) => {
-                match pgp_sign(enc_pass.as_bytes(), priv_key, key_pass) {
-                    Ok(sig) => (sig, signature_address.clone()),
-                    Err(_) => (String::new(), signature_address.clone()),
-                }
-            }
+            Some((priv_key, key_pass)) => match pgp_sign(enc_pass.as_bytes(), priv_key, key_pass) {
+                Ok(sig) => (sig, signature_address.clone()),
+                Err(_) => (String::new(), signature_address.clone()),
+            },
             None => (String::new(), signature_address.clone()),
         };
 
         // Compute name hash if parent has a hash key.
         let name_hash;
         let enc_hash_key;
-        let parent_hash_key_str = parent.folder_properties.as_ref().map(|p| p.node_hash_key.as_str()).unwrap_or("");
+        let parent_hash_key_str = parent
+            .folder_properties
+            .as_ref()
+            .map(|p| p.node_hash_key.as_str())
+            .unwrap_or("");
         if parent_hash_key_str.is_empty() {
             name_hash = String::new();
             enc_hash_key = String::new();
@@ -948,7 +1044,10 @@ impl IpcHandler {
         };
 
         match create_api.create_link(&share_id, &req_body).await {
-            Ok(id) => IpcResponse::ok(req.id, serde_json::json!({ "status": "created", "link_id": id })),
+            Ok(id) => IpcResponse::ok(
+                req.id,
+                serde_json::json!({ "status": "created", "link_id": id }),
+            ),
             Err(e) => IpcResponse::err(req.id, -1, format!("create folder failed: {e}")),
         }
     }
@@ -960,7 +1059,9 @@ impl IpcHandler {
         };
         let parent_link_id = match req.params.get("parent_link_id").and_then(|v| v.as_str()) {
             Some(p) => p.to_string(),
-            None => return IpcResponse::err(req.id, -1, "Missing required param: 'parent_link_id'"),
+            None => {
+                return IpcResponse::err(req.id, -1, "Missing required param: 'parent_link_id'")
+            }
         };
         let local_path = match req.params.get("local_path").and_then(|v| v.as_str()) {
             Some(p) => p.to_string(),
@@ -979,6 +1080,11 @@ impl IpcHandler {
             Some(s) => s,
             None => return IpcResponse::err(req.id, -1, "Not logged in"),
         };
+
+        // Respect manual pause and transfer schedule.
+        if let Err(reason) = self.transfer_manager.lock().await.check_transfer() {
+            return IpcResponse::err(req.id, -1, format!("transfer blocked: {reason:?}"));
+        }
 
         // Build keyring.
         let api = match ApiClient::new() {
@@ -1002,7 +1108,9 @@ impl IpcHandler {
                 Err(e) => return IpcResponse::err(req.id, -1, format!("get parent link: {e}")),
             };
             drop(parent_lookup);
-            let grandparent_id = parent.parent_link_id.unwrap_or_else(|| root_link_id.clone());
+            let grandparent_id = parent
+                .parent_link_id
+                .unwrap_or_else(|| root_link_id.clone());
             let parent_key_id = parent_link_id.clone();
             if let Err(e) = kr.unlock_with_parent(
                 &parent_key_id,
@@ -1020,8 +1128,20 @@ impl IpcHandler {
         };
         let mut engine = SyncEngine::new(engine_api, Arc::clone(&self.db), self.base_path.clone());
 
-        match engine.upload_file(&share_id, &parent_link_id, &std::path::Path::new(&local_path), &kr, &password).await {
-            Ok(link_id) => IpcResponse::ok(req.id, serde_json::json!({ "status": "uploaded", "link_id": link_id })),
+        match engine
+            .upload_file(
+                &share_id,
+                &parent_link_id,
+                std::path::Path::new(&local_path),
+                &kr,
+                &password,
+            )
+            .await
+        {
+            Ok(link_id) => IpcResponse::ok(
+                req.id,
+                serde_json::json!({ "status": "uploaded", "link_id": link_id }),
+            ),
             Err(e) => IpcResponse::err(req.id, -1, format!("upload failed: {e}")),
         }
     }
@@ -1048,6 +1168,22 @@ impl IpcHandler {
         }
     }
 
+    async fn handle_drive_pause(&self, req: IpcRequest) -> IpcResponse {
+        if let Err(e) = self.db.set_meta("sync.paused", "true") {
+            return IpcResponse::err(req.id, -1, format!("db error: {e}"));
+        }
+        self.transfer_manager.lock().await.set_paused(true);
+        IpcResponse::ok(req.id, serde_json::json!({ "status": "paused" }))
+    }
+
+    async fn handle_drive_resume(&self, req: IpcRequest) -> IpcResponse {
+        if let Err(e) = self.db.set_meta("sync.paused", "false") {
+            return IpcResponse::err(req.id, -1, format!("db error: {e}"));
+        }
+        self.transfer_manager.lock().await.set_paused(false);
+        IpcResponse::ok(req.id, serde_json::json!({ "status": "resumed" }))
+    }
+
     async fn handle_transfer_config(&self, req: IpcRequest) -> IpcResponse {
         // Check if this is a SET or GET.
         let has_windows = req.params.get("windows").is_some();
@@ -1069,12 +1205,18 @@ impl IpcHandler {
             if let Err(e) = self.db.set_meta("transfer.config", &json) {
                 return IpcResponse::err(req.id, -1, format!("db error: {e}"));
             }
-            let allowed = config.is_in_window();
+            self.transfer_manager
+                .lock()
+                .await
+                .set_config(config.clone());
+            let allowed = self.transfer_manager.lock().await.can_transfer();
+            let status = self.transfer_manager.lock().await.status_message();
             IpcResponse::ok(
                 req.id,
                 serde_json::json!({
                     "config": config,
                     "transfers_allowed": allowed,
+                    "transfer_status": status,
                 }),
             )
         } else {
@@ -1086,12 +1228,18 @@ impl IpcHandler {
                 .flatten()
                 .and_then(|s| serde_json::from_str::<TransferConfig>(&s).ok())
                 .unwrap_or_default();
-            let allowed = config.is_in_window();
+            self.transfer_manager
+                .lock()
+                .await
+                .set_config(config.clone());
+            let allowed = self.transfer_manager.lock().await.can_transfer();
+            let status = self.transfer_manager.lock().await.status_message();
             IpcResponse::ok(
                 req.id,
                 serde_json::json!({
                     "config": config,
                     "transfers_allowed": allowed,
+                    "transfer_status": status,
                 }),
             )
         }
@@ -1100,7 +1248,10 @@ impl IpcHandler {
     async fn drive_client(&self) -> Result<DriveClient, ()> {
         let api = self.api.lock().await;
         let session = api.as_ref().and_then(|a| a.session()).ok_or(())?;
-        ApiClient::new().ok().map(|c| DriveClient::new(c.with_session(session))).ok_or(())
+        ApiClient::new()
+            .ok()
+            .map(|c| DriveClient::new(c.with_session(session)))
+            .ok_or(())
     }
 
     async fn resolve_folder(
@@ -1108,13 +1259,22 @@ impl IpcHandler {
         params: &serde_json::Value,
         drive: &DriveClient,
     ) -> (Option<String>, Option<String>) {
-        let sid = params.get("share_id").and_then(|v| v.as_str().map(String::from));
-        let fid = params.get("folder_link_id").and_then(|v| v.as_str().map(String::from));
+        let sid = params
+            .get("share_id")
+            .and_then(|v| v.as_str().map(String::from));
+        let fid = params
+            .get("folder_link_id")
+            .and_then(|v| v.as_str().map(String::from));
 
         if sid.is_some() && fid.is_some() {
             return (sid, fid);
         }
 
-        drive.find_main_share().await.ok().map(|(s, f)| (Some(s), Some(f))).unwrap_or_default()
+        drive
+            .find_main_share()
+            .await
+            .ok()
+            .map(|(s, f)| (Some(s), Some(f)))
+            .unwrap_or_default()
     }
 }

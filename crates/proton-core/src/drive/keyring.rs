@@ -60,10 +60,18 @@ pub struct DriveKeyring {
     keys: HashMap<String, KeyEntry>,
 }
 
+impl Default for DriveKeyring {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DriveKeyring {
     /// Create an empty keyring.
     pub fn new() -> Self {
-        Self { keys: HashMap::new() }
+        Self {
+            keys: HashMap::new(),
+        }
     }
 
     // ── Initialisation ─────────────────────────────────────────────────────
@@ -77,15 +85,18 @@ impl DriveKeyring {
     /// - `share`                 — Full share (contains `key` + `passphrase`).
     /// - `address_key_armored`   — PGP-armored address private key.
     /// - `address_key_passphrase` — Passphrase that unlocks the address key
-    ///                              (the "key password" derived from the user's password).
+    ///   (the "key password" derived from the user's password).
     pub fn init_share(
         &mut self,
         share: &Share,
         address_key_armored: &str,
         address_key_passphrase: &[u8],
     ) -> Result<()> {
-        let share_passphrase =
-            pgp_decrypt(&share.passphrase, address_key_armored, address_key_passphrase)?;
+        let share_passphrase = pgp_decrypt(
+            &share.passphrase,
+            address_key_armored,
+            address_key_passphrase,
+        )?;
 
         self.keys.insert(
             share.metadata.share_id.clone(),
@@ -114,9 +125,10 @@ impl DriveKeyring {
         node_key_armored: &str,
         node_passphrase_armored: &str,
     ) -> Result<()> {
-        let parent = self.keys.get(parent_id).ok_or_else(|| {
-            Error::Crypto(format!("no key found for parent id '{parent_id}'"))
-        })?;
+        let parent = self
+            .keys
+            .get(parent_id)
+            .ok_or_else(|| Error::Crypto(format!("no key found for parent id '{parent_id}'")))?;
 
         let node_passphrase = pgp_decrypt(
             node_passphrase_armored,
@@ -152,12 +164,12 @@ impl DriveKeyring {
     /// `parent_id` is the `link_id` of the parent folder (or `share_id` for the
     /// root link's children if the share key was used to encrypt them directly).
     pub fn decrypt_name_raw(&self, encrypted_name: &str, parent_id: &str) -> Result<String> {
-        let parent = self.keys.get(parent_id).ok_or_else(|| {
-            Error::Crypto(format!("no key found for parent id '{parent_id}'"))
-        })?;
+        let parent = self
+            .keys
+            .get(parent_id)
+            .ok_or_else(|| Error::Crypto(format!("no key found for parent id '{parent_id}'")))?;
 
-        let plaintext =
-            pgp_decrypt(encrypted_name, &parent.armored_key, &parent.passphrase)?;
+        let plaintext = pgp_decrypt(encrypted_name, &parent.armored_key, &parent.passphrase)?;
         String::from_utf8(plaintext)
             .map_err(|e| Error::Crypto(format!("decrypted name is not valid UTF-8: {e}")))
     }
@@ -173,9 +185,10 @@ impl DriveKeyring {
     /// the public-key material of the secret key, which is available without
     /// unlocking.
     pub fn encrypt_name_raw(&self, plaintext_name: &str, parent_id: &str) -> Result<String> {
-        let parent = self.keys.get(parent_id).ok_or_else(|| {
-            Error::Crypto(format!("no key found for parent id '{parent_id}'"))
-        })?;
+        let parent = self
+            .keys
+            .get(parent_id)
+            .ok_or_else(|| Error::Crypto(format!("no key found for parent id '{parent_id}'")))?;
 
         pgp_encrypt(plaintext_name.as_bytes(), &parent.armored_key)
     }
@@ -191,13 +204,11 @@ impl DriveKeyring {
 /// # Arguments
 /// - `user_password` — The user's plaintext login password.
 /// - `key_salt_b64`  — Base64-encoded key salt from `/keys/salts`.
-///                     If `None` or empty, `user_password` is used directly.
+///   If `None` or empty, `user_password` is used directly.
 pub fn derive_key_password(user_password: &str, key_salt_b64: Option<&str>) -> Result<Vec<u8>> {
     match key_salt_b64 {
-        Some(salt) if !salt.is_empty() => {
-            hash_password(user_password, salt)
-                .map_err(|e| Error::Crypto(format!("key password derivation failed: {e}")))
-        }
+        Some(salt) if !salt.is_empty() => hash_password(user_password, salt)
+            .map_err(|e| Error::Crypto(format!("key password derivation failed: {e}"))),
         _ => Ok(user_password.as_bytes().to_vec()),
     }
 }

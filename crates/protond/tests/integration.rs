@@ -81,7 +81,10 @@ fn auth_status_not_logged_in() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
-        let resp = client.request("auth.status", serde_json::json!({})).await.unwrap();
+        let resp = client
+            .request("auth.status", serde_json::json!({}))
+            .await
+            .unwrap();
         let result = unwrap_ok(resp);
         assert_eq!(result["logged_in"], serde_json::json!(false));
         assert_eq!(result["username"], serde_json::json!(null));
@@ -94,7 +97,10 @@ fn drive_ls_not_logged_in() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
-        let resp = client.request("drive.ls", serde_json::json!({})).await.unwrap();
+        let resp = client
+            .request("drive.ls", serde_json::json!({}))
+            .await
+            .unwrap();
         let err = resp.error.expect("expected error");
         assert_eq!(err.message, "Not logged in");
     });
@@ -107,7 +113,10 @@ fn drive_ls_decrypted_not_logged_in() {
     rt.block_on(async {
         let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
         let resp = client
-            .request("drive.ls_decrypted", serde_json::json!({"password": "test"}))
+            .request(
+                "drive.ls_decrypted",
+                serde_json::json!({"password": "test"}),
+            )
             .await
             .unwrap();
         let err = resp.error.expect("expected error");
@@ -159,7 +168,6 @@ fn multiple_requests_same_connection() {
 }
 
 #[test]
-#[test]
 fn drive_rename_not_logged_in() {
     let d = Daemon::start();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -204,10 +212,13 @@ fn drive_delete_not_logged_in() {
     rt.block_on(async {
         let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
         let resp = client
-            .request("drive.delete", serde_json::json!({
-                "share_id": "test",
-                "link_id": "test",
-            }))
+            .request(
+                "drive.delete",
+                serde_json::json!({
+                    "share_id": "test",
+                    "link_id": "test",
+                }),
+            )
             .await
             .unwrap();
         let err = resp.error.expect("expected error");
@@ -242,5 +253,93 @@ fn concurrent_connections() {
 
         let r2 = c2.request("ping", serde_json::json!({})).await.unwrap();
         assert_eq!(unwrap_ok(r2), serde_json::json!("pong"));
+    });
+}
+
+#[test]
+fn drive_pause_resume_persists() {
+    let d = Daemon::start();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
+
+        // Initially not paused.
+        let status = unwrap_ok(
+            client
+                .request("drive.status", serde_json::json!({}))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(status["paused"], serde_json::json!(false));
+
+        // Pause.
+        let r = client
+            .request("drive.pause", serde_json::json!({}))
+            .await
+            .unwrap();
+        let result = unwrap_ok(r);
+        assert_eq!(result["status"], serde_json::json!("paused"));
+
+        let status = unwrap_ok(
+            client
+                .request("drive.status", serde_json::json!({}))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(status["paused"], serde_json::json!(true));
+        assert_eq!(status["transfers_allowed"], serde_json::json!(false));
+
+        // Resume.
+        let r = client
+            .request("drive.resume", serde_json::json!({}))
+            .await
+            .unwrap();
+        let result = unwrap_ok(r);
+        assert_eq!(result["status"], serde_json::json!("resumed"));
+
+        let status = unwrap_ok(
+            client
+                .request("drive.status", serde_json::json!({}))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(status["paused"], serde_json::json!(false));
+        assert_eq!(status["transfers_allowed"], serde_json::json!(true));
+    });
+}
+
+#[test]
+fn transfer_config_get_set() {
+    let d = Daemon::start();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut client = IpcClient::connect_to(&d.socket).await.unwrap();
+
+        // Default: unrestricted.
+        let r = client
+            .request("transfer.config", serde_json::json!({}))
+            .await
+            .unwrap();
+        let result = unwrap_ok(r);
+        assert_eq!(result["transfers_allowed"], serde_json::json!(true));
+        let cfg = result["config"].as_object().expect("config object");
+        assert!(cfg["windows"].as_array().unwrap().is_empty());
+
+        // Set a restrictive window far in the past/future so it is never active.
+        let r = client
+            .request(
+                "transfer.config",
+                serde_json::json!({
+                    "windows": [{
+                        "days": ["Mon"],
+                        "start": "02:00",
+                        "end": "03:00"
+                    }]
+                }),
+            )
+            .await
+            .unwrap();
+        let result = unwrap_ok(r);
+        assert_eq!(result["config"]["windows"].as_array().unwrap().len(), 1);
     });
 }
