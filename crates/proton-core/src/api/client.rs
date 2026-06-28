@@ -81,13 +81,19 @@ impl ApiClient {
             .text()
             .await?;
 
-        let parsed: AuthInfoResponse = serde_json::from_str(&text)?;
-        if parsed.code != 1000 {
+        // Parse generically first so API error responses (which omit SRP
+        // fields such as `Modulus`) surface as proper API errors instead of
+        // serde "missing field" failures.
+        let raw: serde_json::Value = serde_json::from_str(&text)?;
+        let code = raw["Code"].as_i64().unwrap_or(0) as i32;
+        if code != 1000 {
             return Err(Error::Api {
-                code: parsed.code,
+                code,
                 message: text,
             });
         }
+
+        let parsed: AuthInfoResponse = serde_json::from_str(&text)?;
         Ok(parsed)
     }
 
